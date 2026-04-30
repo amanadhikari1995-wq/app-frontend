@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+out/
+dist-electron/
+.next/
+*.tsbuildinfo
+
+# Env / secrets
+.env
+.env.local
+.env.*.local
+
+# Generated per-machine; users get the bundled copy
+electron/runtime-config.json
+
+# Editors / OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*

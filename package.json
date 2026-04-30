@@ -1,0 +1,139 @@
+{
+  "name": "watchdog-frontend",
+  "version": "3.5.1",
+  "private": true,
+  "description": "WATCH-DOG — universal AI bot platform desktop app",
+  "author": {
+    "name": "Aman Adhikari",
+    "email": "noreply@watchdogbot.cloud"
+  },
+  "main": "electron/main.js",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "build:web": "node scripts/build-web.js",
+    "deploy:web": "node scripts/deploy-web.js",
+    "start": "next start",
+    "lint": "next lint",
+    "electron": "electron electron/main.js",
+    "electron:export": "next build && electron electron/main.js",
+    "pack": "next build && electron-builder --dir",
+    "dist": "next build && electron-builder",
+    "dist:win": "next build && electron-builder --win",
+    "dist:mac": "next build && electron-builder --mac",
+    "dist:linux": "next build && electron-builder --linux",
+    "installer:win": "electron-builder --prepackaged dist-electron/win-unpacked --win"
+  },
+  "dependencies": {
+    "axios": "^1.7.2",
+    "clsx": "^2.1.1",
+    "electron-updater": "^6.8.3",
+    "lucide-react": "^0.383.0",
+    "next": "14.2.3",
+    "react": "^18",
+    "react-dom": "^18",
+    "recharts": "^2.12.7"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/react": "^18",
+    "@types/react-dom": "^18",
+    "autoprefixer": "^10.0.1",
+    "electron": "^32.3.3",
+    "electron-builder": "^25.1.8",
+    "eslint": "^8",
+    "eslint-config-next": "14.2.3",
+    "postcss": "^8",
+    "tailwindcss": "^3.4.1",
+    "typescript": "^5"
+  },
+  "build": {
+    "appId": "cloud.watchdogbot.app",
+    "productName": "WatchDog",
+    "copyright": "Copyright © 2026 WatchDog",
+    "directories": {
+      "output": "dist-electron",
+      "buildResources": "build"
+    },
+    "files": [
+      "electron/**/*",
+      "!electron/runtime-config.json",
+      "out/**/*",
+      "build/icon.*",
+      "package.json",
+      "!node_modules/**/*",
+      "!**/node_modules/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "electron/runtime-config.json",
+        "to": "runtime-config.json"
+      },
+      {
+        "from": "../backend/dist/watchdog-backend.exe",
+        "to": "backend/watchdog-backend.exe"
+      },
+      {
+        "from": "../backend/dist/watchdog-cloud.exe",
+        "to": "backend/watchdog-cloud.exe"
+      }
+    ],
+    "asar": true,
+    "compression": "normal",
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png",
+      "artifactName": "${productName}-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "WatchDog"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png",
+      "category": "public.app-category.developer-tools",
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png",
+      "category": "Development",
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "amanadhikari1995-wq",
+        "repo": "watchdog-website",
+        "releaseType": "release"
+      }
+    ]
+  }
+}
