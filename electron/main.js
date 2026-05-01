@@ -16,7 +16,7 @@
  *   • webSecurity:     true    — same-origin policy enforced
  *   • Only the explicit IPC channels exposed via preload are available.
  */
-const { app, BrowserWindow, shell, protocol, net, session } = require('electron')
+const { app, BrowserWindow, shell, protocol, net, session, ipcMain } = require('electron')
 const path = require('path')
 const fs   = require('fs')
 const url  = require('url')
@@ -25,6 +25,7 @@ const { buildMenu } = require('./app-menu')
 const { installContextMenu } = require('./context-menu')
 const backendRunner = require('./backend-runner')
 const autoUpdater   = require('./auto-updater')
+const sessionStore  = require('./session-store')
 
 const isDev = !app.isPackaged && process.env.ELECTRON_DEV === '1'
 
@@ -270,6 +271,43 @@ function installCorsBypass() {
     callback({ responseHeaders: headers, statusLine })
   })
 }
+
+// ──────────────────────────────────────────────────────────────────────
+//  IPC: session management — pipes the renderer's Supabase JWT through
+//  to the cloud connector. Called from src/app/login/page.tsx on
+//  successful login. See electron/session-store.js for the on-disk
+//  schema.
+// ──────────────────────────────────────────────────────────────────────
+ipcMain.handle('wd:set-session', async (_event, raw) => {
+  try {
+    if (!raw || typeof raw !== 'object' || !raw.access_token) {
+      return { ok: false, error: 'invalid session payload' }
+    }
+    const written = sessionStore.write(app.getPath('userData'), raw)
+    console.log('[main] session persisted for user', written.user_id, 'email', written.email)
+    // Bounce the cloud connector so it re-reads session.json with the
+    // new token. Backend stays up — that runs against localhost only and
+    // doesn't care about the user's cloud identity.
+    backendRunner.restartCloud()
+    return { ok: true, saved_at: written.saved_at }
+  } catch (e) {
+    console.error('[main] wd:set-session failed:', e)
+    return { ok: false, error: e.message }
+  }
+})
+
+ipcMain.handle('wd:clear-session', async () => {
+  try {
+    sessionStore.clear(app.getPath('userData'))
+    console.log('[main] session cleared')
+    backendRunner.restartCloud()
+    return { ok: true }
+  } catch (e) {
+    console.error('[main] wd:clear-session failed:', e)
+    return { ok: false, error: e.message }
+  }
+})
+
 
 app.whenReady().then(async () => {
   registerAppProtocol()    // must be done after app ready, before first load

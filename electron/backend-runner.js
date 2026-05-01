@@ -331,4 +331,32 @@ function stopAll() {
 }
 
 
-module.exports = { start, stopAll }
+/**
+ * Stop just the cloud connector (not the backend) and restart it.
+ * Called from main.js when the user signs in / signs out — wd_cloud.py
+ * picks up the new session.json on its next start.
+ */
+function restartCloud() {
+  if (isDev) {
+    console.log('[backend-runner] restartCloud skipped — dev mode.')
+    return
+  }
+  const cloud = services.find((s) => s.exeName === CLOUD_EXE)
+  if (!cloud) {
+    console.warn('[backend-runner] no cloud service registered yet — start() must run first')
+    return
+  }
+  console.log('[backend-runner] restarting cloud connector with new session…')
+  // Reset crash counter so a fresh login gets the full 5-attempt budget
+  cloud.attempts = 0
+  cloud.stopping = false
+  if (cloud.proc) {
+    try { cloud.proc.kill('SIGTERM') } catch { /* already gone */ }
+    // Service.onExit will restart it because stopping=false
+  } else {
+    cloud.start()
+  }
+}
+
+
+module.exports = { start, stopAll, restartCloud }

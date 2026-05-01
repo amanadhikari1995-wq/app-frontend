@@ -193,7 +193,39 @@ export default function LoginPage() {
       // Auth lives on the Website backend (Node.js + MongoDB). The desktop
       // app never stores passwords — it only holds the JWT this returns.
       const res = await websiteAuthApi.login(email.trim(), password)
-      const { access_token, user, is_subscribed, subscription } = res.data
+      const { access_token, refresh_token, expires_in, user, is_subscribed, subscription } = res.data as {
+        access_token?:  string
+        refresh_token?: string
+        expires_in?:    number
+        user?: { id?: string; email?: string; name?: string; username?: string }
+        is_subscribed?: boolean
+        subscription?: { active?: boolean }
+      }
+
+      // Hand the full Supabase session over to Electron's main process so
+      // wd_cloud.py can connect to the relay as the same user. Skips
+      // silently in the web build (where electronAPI is undefined).
+      // Without this step, every brand-new install of the desktop app
+      // would have a working UI but a "desktop offline" web dashboard,
+      // because wd_cloud.py would have no credentials of its own.
+      try {
+        const electronAPI = (window as unknown as {
+          electronAPI?: { setSession?: (s: unknown) => Promise<unknown> }
+        }).electronAPI
+        if (access_token && electronAPI?.setSession) {
+          await electronAPI.setSession({
+            access_token,
+            refresh_token: refresh_token || null,
+            expires_at:    expires_in
+                             ? Math.floor(Date.now() / 1000) + expires_in
+                             : Math.floor(Date.now() / 1000) + 3600,
+            user_id:       user?.id || null,
+            email:         user?.email || email.trim(),
+          })
+        }
+      } catch (e) {
+        console.warn('[login] could not persist session to Electron main:', e)
+      }
 
       if (!access_token) {
         setErrors({ form: 'Login failed — no token returned by the server.' })

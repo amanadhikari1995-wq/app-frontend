@@ -16,7 +16,7 @@
  * That keeps file-system reads centralised in main.js and avoids preload
  * needing to know absolute paths in packaged builds.
  */
-const { contextBridge } = require('electron')
+const { contextBridge, ipcRenderer } = require('electron')
 
 // Pull the JSON config string out of process.argv. main.js passes it as
 // `--runtime-config={...}` so it's easy to grep for and survives packaging.
@@ -46,4 +46,15 @@ contextBridge.exposeInMainWorld('__CONFIG__', {
 contextBridge.exposeInMainWorld('electronAPI', {
   isElectron: true,
   platform:   process.platform,
+
+  /**
+   * Pipe the user's Supabase session to Electron's main process so it can
+   * (a) persist it to disk for wd_cloud.py to read, and (b) restart the
+   * cloud connector with the fresh token. Called from the login page after
+   * /api/auth/login succeeds, and from any place that refreshes the JWT.
+   */
+  setSession: (session) => ipcRenderer.invoke('wd:set-session', session),
+
+  /** Tell main to clear the session file + kill the cloud connector. */
+  clearSession: () => ipcRenderer.invoke('wd:clear-session'),
 })
