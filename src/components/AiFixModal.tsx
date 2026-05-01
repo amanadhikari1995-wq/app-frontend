@@ -1,6 +1,7 @@
 ﻿'use client'
 import { useState, useEffect } from 'react'
 import { botsApi } from '@/lib/api'
+import { websiteAiApi } from '@/lib/websiteApi'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface AiFixChange {
@@ -107,16 +108,38 @@ export default function AiFixModal({ botId, botCode, errorLogs, onApply, onClose
     setStage('loading')
     setErrMsg('')
     try {
-      const resp = await botsApi.aiFix(botId, {
-        error_logs: errorLogs,
+      // Centralised AI Fix — calls watchdogbot.cloud /api/ai/fix with the
+      // user's Supabase JWT. The Anthropic key lives there, so end users
+      // never need to install one. The cloud endpoint enforces the
+      // subscription gate and per-user daily limit.
+      const resp = await websiteAiApi.fix({
+        bot_code:      botCode,
+        error_logs:    errorLogs,
         extra_context: extraNote || undefined,
       })
-      setResult(resp.data)
+      // Coerce the cloud's looser shape (optional fields) into our local
+      // AiFixResult shape (required fields). Missing values default to ''.
+      const data = resp.data
+      const normalized: AiFixResult = {
+        explanation: data.explanation || '',
+        fixed_code:  data.fixed_code  || '',
+        changes: (data.changes || []).map((c) => ({
+          description: c.description ?? '',
+          old_code:    c.old_code    ?? '',
+          new_code:    c.new_code    ?? '',
+        })),
+      }
+      setResult(normalized)
       setActiveChange(0)
       setStage('result')
     } catch (e: unknown) {
-      const msg = (e as { response?: { data?: { detail?: string } }; message?: string })
-        ?.response?.data?.detail ?? (e as { message?: string })?.message ?? 'Unknown error'
+      const ax = e as { response?: { status?: number; data?: { error?: string; detail?: string } }; message?: string }
+      // The website backend returns { error: "..." }; the legacy local
+      // backend used { detail: "..." }. Surface whichever is present.
+      const msg = ax?.response?.data?.error
+               ?? ax?.response?.data?.detail
+               ?? ax?.message
+               ?? 'Unknown error'
       setErrMsg(msg)
       setStage('error')
     }

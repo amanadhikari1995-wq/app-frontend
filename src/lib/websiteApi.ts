@@ -87,4 +87,37 @@ export const websiteAuthApi = {
   },
 }
 
+
+// ── Centralised "Fix with AI" ────────────────────────────────────────────────
+// The Anthropic key lives on the website backend (Runway env var), so end
+// users don't need their own Anthropic account. The website enforces the
+// subscription gate + per-user daily limit; this client just sends the
+// payload and reads the JSON response.
+
+export interface AiFixResponse {
+  explanation: string
+  changes:     { description?: string; old_code?: string; new_code?: string }[]
+  fixed_code:  string
+  model?:      string
+  usage?: {
+    input_tokens:          number
+    output_tokens:         number
+    cache_read_tokens?:    number
+    cache_creation_tokens?: number
+  }
+  rate_limit?: { used_today: number; daily_limit: number }
+}
+
+export const websiteAiApi = {
+  /**
+   * Send a bot's source + recent error logs to Claude (running in the
+   * cloud), get back a structured fix. Returns the parsed JSON or throws
+   * an Axios error whose response.data.error explains why (402 = no
+   * subscription, 429 = daily quota, 503 = service down, 502 = AI returned
+   * something we couldn't parse).
+   */
+  fix: (payload: { bot_code: string; error_logs: string[]; extra_context?: string }) =>
+    websiteApi.post<AiFixResponse>('/api/ai/fix', payload),
+}
+
 export default websiteApi
