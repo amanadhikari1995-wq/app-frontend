@@ -1,6 +1,6 @@
 {
   "name": "watchdog-frontend",
-  "version": "3.5.1",
+  "version": "3.5.2",
   "private": true,
   "description": "WATCH-DOG — universal AI bot platform desktop app",
   "author": {
@@ -25,6 +25,7 @@
     "installer:win": "electron-builder --prepackaged dist-electron/win-unpacked --win"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.105.1",
     "axios": "^1.7.2",
     "clsx": "^2.1.1",
     "electron-updater": "^6.8.3",
