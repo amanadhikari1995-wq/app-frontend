@@ -857,15 +857,26 @@ export default function DashboardPage() {
       )}
       {/* Backend-offline banner — silent under Admin Mode (no real backend
           expected) and silent if user is on the /login page. */}
-      {netErr && (
-        <div className="flex items-center justify-center gap-2 px-4 py-2 text-xs font-bold"
-          style={{background:'rgba(239,68,68,0.1)',borderBottom:'1px solid rgba(239,68,68,0.2)',color:'#ef4444'}}>
-          <svg className="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
-          </svg>
-          Local backend unreachable — retrying… Check that FastAPI is running on port 8000 and CORS allows the app.
-        </div>
-      )}
+      {netErr && (() => {
+        // Different message in browser vs Electron — the user's mental model
+        // is completely different. In Electron the local FastAPI on port 8000
+        // is what's down; in the web dashboard there's no local backend at
+        // all, only the cloud relay → user's PC tunnel.
+        const isWeb = typeof window !== 'undefined' &&
+                      /^https?:/i.test(window.location.protocol)
+        return (
+          <div className="flex items-center justify-center gap-2 px-4 py-2 text-xs font-bold"
+            style={{background:'rgba(239,68,68,0.1)',borderBottom:'1px solid rgba(239,68,68,0.2)',color:'#ef4444'}}>
+            <svg className="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+            </svg>
+            {isWeb
+              ? <>Your desktop app appears to be offline. Open WatchDog on your PC and sign in with the same account to use this dashboard.</>
+              : <>Local backend unreachable — retrying… Check that the bundled backend is running.</>
+            }
+          </div>
+        )
+      })()}
 
       <div className="flex items-start" style={{minHeight:`calc(100vh - ${NAVBAR_H}px)`}}>
 

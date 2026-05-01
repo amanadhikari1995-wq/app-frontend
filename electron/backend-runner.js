@@ -19,10 +19,45 @@
 'use strict'
 
 const { app, net } = require('electron')
-const { spawn }    = require('child_process')
+const { spawn, execSync } = require('child_process')
 const path         = require('path')
 const fs           = require('fs')
 const os           = require('os')
+
+
+// ──────────────────────────────────────────────────────────────────────
+//  Kill leftover backend / cloud processes from previous launches.
+//
+//  Symptoms this fixes: every time the user opens WatchDog, a new
+//  watchdog-cloud.exe spawns. If they open it 6 times without quitting
+//  cleanly (or it crashes the renderer without firing before-quit),
+//  Task Manager piles up 6 cloud processes. They all try to log in to
+//  Supabase and fight over the same realtime channel.
+//
+//  Run BEFORE we spawn our own — kills any process whose name matches,
+//  EXCEPT our own PID and our PPID (the bootstrap that PyInstaller --
+//  onefile leaves around while the real Python child runs).
+// ──────────────────────────────────────────────────────────────────────
+function killStalePythonServices() {
+  if (process.platform !== 'win32') return
+  const ourPid = process.pid
+  const targets = ['watchdog-backend.exe', 'watchdog-cloud.exe']
+  for (const exe of targets) {
+    try {
+      execSync(
+        `taskkill /F /FI "IMAGENAME eq ${exe}" /FI "PID ne ${ourPid}"`,
+        { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
+      )
+      console.log(`[backend-runner] cleared stale ${exe} processes`)
+    } catch (e) {
+      // taskkill exits 128 when there's nothing to kill — that's fine
+      const stderr = (e && e.stderr ? e.stderr.toString() : '').toLowerCase()
+      if (!stderr.includes('not found') && !stderr.includes('no tasks')) {
+        console.warn(`[backend-runner] taskkill ${exe}:`, stderr || e.message)
+      }
+    }
+  }
+}
 
 const isDev = !app.isPackaged && process.env.ELECTRON_DEV === '1'
 
@@ -265,6 +300,11 @@ async function start() {
     console.log('[backend-runner] Run uvicorn / wd_cloud.py manually for hot reload.')
     return
   }
+
+  // Wipe any backend/cloud processes left over from a crashed previous
+  // launch BEFORE we spawn our own. Without this, Task Manager piles up
+  // duplicates every time the app reopens uncleanly.
+  killStalePythonServices()
 
   const backend = new Service('backend', BACKEND_EXE)
   const cloud   = new Service('cloud',   CLOUD_EXE)
