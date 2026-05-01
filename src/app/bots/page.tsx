@@ -1404,6 +1404,49 @@ export default function BotsPage() {
                         Run
                       </button>
                     )}
+
+                    {/* ── Fix with AI (only when there are ERROR-level logs) ───────
+                        Same conditional rule + visual treatment as the per-bot
+                        detail page. Bot is healthy → button is invisible.
+                        First ERROR appears → button materializes with a glowing
+                        red→amber gradient + sparkle + count badge. */}
+                    {(() => {
+                      const errCount = panelLogs.reduce((n, l) => n + (l.level === 'ERROR' ? 1 : 0), 0)
+                      if (errCount === 0) return null
+                      return (
+                        <button
+                          onClick={openAiFix}
+                          title={`${errCount} error${errCount === 1 ? '' : 's'} in recent logs — let Claude analyse and patch`}
+                          className="ai-fix-cta flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-transform"
+                          style={{
+                            background: 'linear-gradient(135deg, #ff4444 0%, #ff8a3d 55%, #fbbf24 100%)',
+                            color:      '#0a0e14',
+                            border:     '1px solid rgba(255, 138, 61, 0.55)',
+                            boxShadow:  '0 0 22px rgba(255, 100, 60, 0.45), 0 4px 14px rgba(255,68,68,0.18)',
+                          }}
+                          onMouseEnter={e => (e.currentTarget as HTMLElement).style.transform = 'translateY(-1px) scale(1.04)'}
+                          onMouseLeave={e => (e.currentTarget as HTMLElement).style.transform = 'translateY(0)   scale(1)'}
+                        >
+                          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                            <path d="M12 2l1.6 5.4L19 9l-5.4 1.6L12 16l-1.6-5.4L5 9l5.4-1.6L12 2zm6.5 11l.9 3.1 3.1.9-3.1.9-.9 3.1-.9-3.1L15.4 17l3.1-.9.9-3.1z" />
+                          </svg>
+                          <span>Fix with AI</span>
+                          <span
+                            className="ai-fix-badge"
+                            aria-hidden="true"
+                            style={{
+                              minWidth: 20, height: 20, padding: '0 6px',
+                              borderRadius: 999, background: '#0a0e14', color: '#ffffff',
+                              fontSize: 10, fontWeight: 800,
+                              display: 'grid', placeItems: 'center',
+                            }}
+                          >
+                            {errCount > 99 ? '99+' : errCount}
+                          </span>
+                        </button>
+                      )
+                    })()}
+
                     <button onClick={closePanel}
                       className="w-9 h-9 rounded-xl flex items-center justify-center text-slate-500 hover:text-white transition-colors"
                       style={{ border: '1px solid var(--border)' }}>
@@ -1919,19 +1962,21 @@ export default function BotsPage() {
                         )}
                       </button>
 
-                      {/* ── Fix with Cloud AI ── */}
-                      <button onClick={openAiFix}
-                        className="w-full py-3 rounded-2xl font-bold text-sm transition-all flex items-center justify-center gap-2 hover:scale-[1.01]"
-                        style={{
-                          background: 'var(--accent-dim)',
-                          color: 'var(--accent)',
-                          border: '1px solid rgba(0,245,255,0.2)',
-                        }}>
-                        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
-                        </svg>
-                        Fix with Cloud AI
-                      </button>
+                      {/* ── Fix with Cloud AI — only when there are ERROR-level logs ── */}
+                      {panelLogs.some(l => l.level === 'ERROR') && (
+                        <button onClick={openAiFix}
+                          className="w-full py-3 rounded-2xl font-bold text-sm transition-all flex items-center justify-center gap-2 hover:scale-[1.01]"
+                          style={{
+                            background: 'var(--accent-dim)',
+                            color: 'var(--accent)',
+                            border: '1px solid rgba(0,245,255,0.2)',
+                          }}>
+                          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+                          </svg>
+                          Fix with Cloud AI
+                        </button>
+                      )}
                     </div>
                   )}
 
@@ -1943,14 +1988,17 @@ export default function BotsPage() {
                         <span className="text-xs text-slate-500 font-semibold uppercase tracking-wider">
                           {panelLogs.length} log{panelLogs.length !== 1 ? 's' : ''}
                         </span>
-                        <button onClick={openAiFix}
-                          className="flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-xl transition-all hover:scale-105"
-                          style={{ background: 'var(--accent-dim)', color: 'var(--accent)', border: '1px solid rgba(0,245,255,0.2)' }}>
-                          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
-                          </svg>
-                          Debug with Cloud AI
-                        </button>
+                        {/* Only show when there are ERROR logs, matching the global rule. */}
+                        {panelLogs.some(l => l.level === 'ERROR') && (
+                          <button onClick={openAiFix}
+                            className="flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-xl transition-all hover:scale-105"
+                            style={{ background: 'var(--accent-dim)', color: 'var(--accent)', border: '1px solid rgba(0,245,255,0.2)' }}>
+                            <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+                            </svg>
+                            Debug with Cloud AI
+                          </button>
+                        )}
                       </div>
                       <div className="h-[490px] overflow-y-auto p-5 font-mono text-xs space-y-2">
                         {panelLogs.length === 0 ? (
@@ -2975,6 +3023,32 @@ export default function BotsPage() {
           onClose={() => setAiFixOpen(false)}
         />
       )}
+
+      {/* Keyframes for the prominent "Fix with AI" CTA in the panel header.
+          Same animation set as the per-bot detail page so the button feels
+          identical in both places. */}
+      <style jsx global>{`
+        @keyframes ai-fix-glow {
+          0%, 100% {
+            box-shadow:
+              0 0 22px rgba(255, 100, 60, 0.40),
+              0 4px 14px rgba(255, 68, 68, 0.18);
+          }
+          50% {
+            box-shadow:
+              0 0 34px rgba(255, 100, 60, 0.65),
+              0 4px 18px rgba(255, 68, 68, 0.28);
+          }
+        }
+        .ai-fix-cta { animation: ai-fix-glow 2.4s ease-in-out infinite; }
+        .ai-fix-cta:hover { animation-play-state: paused; }
+
+        @keyframes ai-fix-badge-pulse {
+          0%, 100% { transform: scale(1); }
+          50%      { transform: scale(1.12); }
+        }
+        .ai-fix-badge { animation: ai-fix-badge-pulse 1.6s ease-in-out infinite; }
+      `}</style>
     </div>
   )
 }
