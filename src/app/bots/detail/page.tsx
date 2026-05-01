@@ -13,6 +13,7 @@ import {
 import { detectRequiredApis, detectAllApis, unconfiguredApis, type DetectedApi } from '@/lib/api-detector'
 import { detectBotType, detectBotSubLabel, BOT_TYPE_META, type BotType } from '@/lib/bot-detector'
 import { useOnlineStatus } from '@/hooks/useOnlineStatus'
+import AiFixModal from '@/components/AiFixModal'
 
 const BG = 'var(--bg)'
 const CARD = { background: 'var(--card)', backdropFilter: 'blur(40px) saturate(180%)', WebkitBackdropFilter: 'blur(40px) saturate(180%)', boxShadow: 'var(--shadow-card)' } as React.CSSProperties
@@ -541,6 +542,31 @@ export default function BotDetailPage() {
   // catch which hid backend/network issues from the user.
   const [logFetchError,  setLogFetchError]  = useState<string | null>(null)
   const logFetchErrorRef = useRef<string | null>(null)
+
+  // ── AI Fix modal state ────────────────────────────────────────────────────
+  // Opened by the "Fix with AI" button — only visible when the latest log
+  // poll surfaces ERROR-level entries. Pre-populated with the last 60
+  // ERROR/WARNING lines so Claude has the relevant traceback in context.
+  const [aiFixOpen, setAiFixOpen] = useState(false)
+  const [aiFixLogs, setAiFixLogs] = useState<string[]>([])
+
+  /** Snapshot recent ERROR/WARNING lines and open the modal. Resolves
+   *  dashStats lazily from a ref so the callback identity stays stable
+   *  even though the underlying state churns every poll. */
+  const dashStatsLatest = useRef<DashStats>(emptyDash())
+  const openAiFix = useCallback(() => {
+    const all = dashStatsLatest.current?.sortedAllLogs || []
+    const errLines = all
+      .filter(l => l.level === 'ERROR' || l.level === 'WARNING')
+      .slice(-60)
+      .map(l => `${l.created_at} | ${l.level.padEnd(7)} | ${l.message}`)
+    setAiFixLogs(errLines)
+    setAiFixOpen(true)
+  }, [])
+
+  // Mirror dashStats into the ref so openAiFix always sees fresh logs
+  // without re-creating its callback identity on every poll.
+  useEffect(() => { dashStatsLatest.current = dashStats }, [dashStats])
 
   // ── Edit Code modal state ─────────────────────────────────────────────────
   const [codeModal, setCodeModal] = useState(false)
@@ -1279,6 +1305,53 @@ export default function BotDetailPage() {
                   <path strokeLinecap="round" strokeLinejoin="round" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
                 </svg>
                 Edit Code
+              </button>
+            )}
+
+            {/* ── Fix with AI ───────────────────────────────────────────────
+                Conditionally rendered — only when there is at least one
+                ERROR-level log in the recent window. The animated red→amber
+                gradient + sparkle icon + glow draws the eye to it the
+                instant something breaks. */}
+            {!isLockedBot(botId) && dashStats.errorCount > 0 && (
+              <button
+                onClick={openAiFix}
+                title={`${dashStats.errorCount} error${dashStats.errorCount === 1 ? '' : 's'} in recent logs — let Claude analyse and patch`}
+                className="ai-fix-cta flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-bold transition-transform"
+                style={{
+                  background:    'linear-gradient(135deg, #ff4444 0%, #ff8a3d 55%, #fbbf24 100%)',
+                  color:         '#0a0e14',
+                  border:        '1px solid rgba(255, 138, 61, 0.55)',
+                  boxShadow:     '0 0 28px rgba(255, 100, 60, 0.45), 0 6px 18px rgba(255,68,68,0.18)',
+                  letterSpacing: '0.01em',
+                }}
+                onMouseEnter={e => (e.currentTarget as HTMLElement).style.transform = 'translateY(-1px) scale(1.03)'}
+                onMouseLeave={e => (e.currentTarget as HTMLElement).style.transform = 'translateY(0)   scale(1)'}
+              >
+                {/* sparkle icon */}
+                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                  <path d="M12 2l1.6 5.4L19 9l-5.4 1.6L12 16l-1.6-5.4L5 9l5.4-1.6L12 2zm6.5 11l.9 3.1 3.1.9-3.1.9-.9 3.1-.9-3.1L15.4 17l3.1-.9.9-3.1z" />
+                </svg>
+
+                <span>Fix with AI</span>
+
+                {dashStats.errorCount > 0 && (
+                  <span
+                    className="ai-fix-badge"
+                    aria-hidden="true"
+                    style={{
+                      minWidth: 22, height: 22, padding: '0 6px',
+                      borderRadius: 999,
+                      background: '#0a0e14',
+                      color: '#ffffff',
+                      fontSize: 11, fontWeight: 800,
+                      display: 'grid', placeItems: 'center',
+                      marginLeft: 2,
+                    }}
+                  >
+                    {dashStats.errorCount > 99 ? '99+' : dashStats.errorCount}
+                  </span>
+                )}
               </button>
             )}
 
@@ -3890,6 +3963,53 @@ export default function BotDetailPage() {
           </div>
         </div>
       )}
+
+      {/* ── AI Fix modal — opens from the "Fix with AI" button above. The
+            modal owns the API call (POST /api/bots/{id}/ai-fix), shows
+            the proposed diff, and writes the accepted code back via the
+            standard PUT /api/bots/{id} flow. ──────────────────────────── */}
+      {aiFixOpen && bot && (
+        <AiFixModal
+          botId={bot.id}
+          botCode={code}
+          errorLogs={aiFixLogs}
+          onApply={(fixedCode) => {
+            // Refresh local editor state so subsequent clicks of "Edit Code"
+            // see the patched version (the modal already PUT-saved server-side).
+            setCode(fixedCode)
+            loadBot()
+          }}
+          onClose={() => setAiFixOpen(false)}
+        />
+      )}
+
+      {/* Global keyframes for the Fix-with-AI button (subtle attention-grab). */}
+      <style jsx global>{`
+        @keyframes ai-fix-glow {
+          0%, 100% {
+            box-shadow:
+              0 0 24px rgba(255, 100, 60, 0.40),
+              0 6px 18px rgba(255, 68, 68, 0.18);
+          }
+          50% {
+            box-shadow:
+              0 0 38px rgba(255, 100, 60, 0.65),
+              0 6px 22px rgba(255, 68, 68, 0.28);
+          }
+        }
+        .ai-fix-cta {
+          animation: ai-fix-glow 2.4s ease-in-out infinite;
+        }
+        .ai-fix-cta:hover { animation-play-state: paused; }
+
+        @keyframes ai-fix-badge-pulse {
+          0%, 100% { transform: scale(1); }
+          50%      { transform: scale(1.12); }
+        }
+        .ai-fix-badge {
+          animation: ai-fix-badge-pulse 1.6s ease-in-out infinite;
+        }
+      `}</style>
 
     </div>
   )
