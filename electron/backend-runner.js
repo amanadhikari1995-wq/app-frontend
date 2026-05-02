@@ -139,10 +139,51 @@ function readEnvFile() {
  *      Unicode characters (✓, ❌, →, ¢ …) without crashing on the
  *      Windows cp1252 default codepage.
  */
+// ──────────────────────────────────────────────────────────────────────
+//  Cloud-sync config (step 3 of bot data cloud-sync rollout)
+//
+//  The Python backend's cloud_client.py needs SUPABASE_URL + SUPABASE_ANON_KEY
+//  in its env so it can validate user JWTs and mirror bot CRUD to the cloud.
+//  Both values are PUBLIC (the anon key is safe to ship — it only authenticates
+//  to Supabase as the "anon" role, which is locked down by RLS).
+//
+//  We fetch them once from the website's /api/config endpoint at process boot
+//  and cache for the rest of the Electron lifetime. If the fetch fails the
+//  Python backend silently degrades to local-only mode (no cross-device sync
+//  but everything else keeps working).
+// ──────────────────────────────────────────────────────────────────────
+const WEBSITE_API = process.env.WEBSITE_API_URL || 'https://watchdogbot.cloud'
+let _cloudCfg = null
+async function loadCloudCfg() {
+  if (_cloudCfg !== null) return _cloudCfg
+  try {
+    const res = await fetch(`${WEBSITE_API}/api/config`, {
+      headers: { Accept: 'application/json' },
+    })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const cfg = await res.json()
+    _cloudCfg = {
+      SUPABASE_URL:      cfg?.supabase?.url || '',
+      SUPABASE_ANON_KEY: cfg?.supabase?.anonKey || '',
+    }
+    console.log('[backend-runner] loaded cloud config from', WEBSITE_API)
+  } catch (e) {
+    console.warn('[backend-runner] cloud config fetch failed:', e.message,
+                 '— Python backend will run local-only')
+    _cloudCfg = { SUPABASE_URL: '', SUPABASE_ANON_KEY: '' }
+  }
+  return _cloudCfg
+}
+
 function childEnv() {
+  // _cloudCfg may still be null on the very first spawn before loadCloudCfg
+  // resolves — that's fine, the Python side handles missing env gracefully
+  // and the next spawn (or restart) will pick up the populated values.
+  const cloud = _cloudCfg || { SUPABASE_URL: '', SUPABASE_ANON_KEY: '' }
   return {
     ...process.env,
     ...readEnvFile(),
+    ...cloud,
     PYTHONIOENCODING: 'utf-8',
     PYTHONUTF8:       '1',
   }
@@ -300,6 +341,12 @@ async function start() {
     console.log('[backend-runner] Run uvicorn / wd_cloud.py manually for hot reload.')
     return
   }
+
+  // Pull cloud-sync config (SUPABASE_URL/ANON_KEY) from the website API so
+  // the Python backend can talk to Supabase. Awaited so the first spawn has
+  // the env populated; on failure we proceed anyway and Python runs
+  // local-only (the assignment in childEnv() handles the empty case).
+  await loadCloudCfg()
 
   // Wipe any backend/cloud processes left over from a crashed previous
   // launch BEFORE we spawn our own. Without this, Task Manager piles up
