@@ -234,6 +234,27 @@ class Service {
       return
     }
 
+    // ── Per-Service stale-cleanup ────────────────────────────────────────
+    // Before spawning, kill any other instances of THIS specific exe. This
+    // closes the loop where a previously-spawned process survives an
+    // external kill (or self-spawned a child) and Service has no record of
+    // it — without this, every Service.start() call could leave one
+    // duplicate behind. Only kills processes we don't track ourselves
+    // (`PID ne <self>`), so the renderer + Electron main process are safe.
+    if (process.platform === 'win32') {
+      try {
+        execSync(
+          `taskkill /F /FI "IMAGENAME eq ${this.exeName}" /FI "PID ne ${process.pid}"`,
+          { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
+        )
+      } catch (e) {
+        const stderr = (e && e.stderr ? e.stderr.toString() : '').toLowerCase()
+        if (!stderr.includes('not found') && !stderr.includes('no tasks')) {
+          console.warn(`[${this.label}] pre-spawn taskkill warning:`, stderr || e.message)
+        }
+      }
+    }
+
     console.log(`[${this.label}] spawning ${exePath}`)
     this.proc = spawn(exePath, [], {
       windowsHide: true,
@@ -263,6 +284,14 @@ class Service {
     this.proc = null
     if (this.stopping) {
       console.log(`[${this.label}] stopped (code=${code} signal=${signal})`)
+      return
+    }
+    // Clean exit (code 0) = the Python side decided to exit on purpose
+    // (e.g. port-already-in-use pre-flight check returned cleanly because
+    // a sibling instance is already serving). Don't respawn — that would
+    // create duplicate processes. The sibling is doing the job.
+    if (code === 0) {
+      console.log(`[${this.label}] exited cleanly (code=0) — assuming a sibling is serving. No respawn.`)
       return
     }
     if (this.attempts >= MAX_RESTARTS) {
