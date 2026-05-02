@@ -208,12 +208,18 @@ export default function LoginPage() {
       // Without this step, every brand-new install of the desktop app
       // would have a working UI but a "desktop offline" web dashboard,
       // because wd_cloud.py would have no credentials of its own.
+      // Persist the Supabase session to Electron's main process so wd_cloud.py
+      // AND the Python sync engine can read the JWT from session.json. This
+      // is the SINGLE most important post-login step — without it the entire
+      // cloud-sync chain (relay tunnel + bidirectional bot sync) is dead.
+      // We retry up to 3 times because the first IPC call right after the
+      // renderer mounts can race with main.js's handler registration.
       try {
         const electronAPI = (window as unknown as {
-          electronAPI?: { setSession?: (s: unknown) => Promise<unknown> }
+          electronAPI?: { setSession?: (s: unknown) => Promise<{ ok?: boolean; error?: string } | unknown> }
         }).electronAPI
         if (access_token && electronAPI?.setSession) {
-          await electronAPI.setSession({
+          const payload = {
             access_token,
             refresh_token: refresh_token || null,
             expires_at:    expires_in
@@ -221,7 +227,29 @@ export default function LoginPage() {
                              : Math.floor(Date.now() / 1000) + 3600,
             user_id:       user?.id || null,
             email:         user?.email || email.trim(),
-          })
+          }
+          let lastErr: unknown = null
+          for (let attempt = 1; attempt <= 3; attempt++) {
+            try {
+              const res = await electronAPI.setSession(payload) as { ok?: boolean; error?: string }
+              if (res && res.ok) { lastErr = null; break }
+              lastErr = res?.error || 'unknown'
+              console.warn(`[login] setSession attempt ${attempt} returned not-ok:`, lastErr)
+            } catch (e) {
+              lastErr = e
+              console.warn(`[login] setSession attempt ${attempt} threw:`, e)
+            }
+            await new Promise(r => setTimeout(r, 400 * attempt))
+          }
+          if (lastErr) {
+            // Surface it but don't block the login — user can still use the
+            // local app. Cloud sync just won't work until they re-log.
+            console.error('[login] session.json never persisted after 3 attempts:', lastErr)
+          }
+        } else if (access_token && !electronAPI?.setSession) {
+          // Web build: nothing to persist. Cloud sync still works because
+          // the website reads bots from Supabase directly via /api/v2/bots
+          // (no session.json needed in web mode).
         }
       } catch (e) {
         console.warn('[login] could not persist session to Electron main:', e)
