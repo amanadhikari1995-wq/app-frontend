@@ -71,12 +71,14 @@
         "to": "runtime-config.json"
       },
       {
-        "from": "../backend/dist/watchdog-backend.exe",
-        "to": "backend/watchdog-backend.exe"
+        "from": "../backend/dist/watchdog-backend",
+        "to": "backend/watchdog-backend",
+        "filter": ["**/*"]
       },
       {
-        "from": "../backend/dist/watchdog-cloud.exe",
-        "to": "backend/watchdog-cloud.exe"
+        "from": "../backend/dist/watchdog-cloud",
+        "to": "backend/watchdog-cloud",
+        "filter": ["**/*"]
       }
     ],
     "asar": true,

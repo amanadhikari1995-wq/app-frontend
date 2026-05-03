@@ -196,20 +196,42 @@ function childEnv() {
 
 /**
  * Returns the absolute path to a bundled exe.
- *  - Packaged build:   <install>/resources/backend/<name>
- *  - Unpackaged build: <project>/resources/backend/<name>  (electron-builder --dir)
- *  - Dev:              ../../backend/dist/<name>           (raw PyInstaller output)
+ *
+ * Layout (post-onedir migration):
+ *   Packaged: <install>/resources/backend/<exe-stem>/<exe-stem>.exe
+ *   Dev:      ../../backend/dist/<exe-stem>/<exe-stem>.exe   (PyInstaller --onedir output)
+ *
+ * The exe-stem is the name minus '.exe' (e.g. 'watchdog-backend' for
+ * 'watchdog-backend.exe'). PyInstaller --onedir produces a folder
+ * named after the stem with the exe inside.
+ *
+ * Falls back to legacy --onefile layout (just <name>.exe in backend/)
+ * when the new path doesn't exist, so a stale install with the old
+ * file structure still launches.
  */
 function resolveExe(name) {
+  const stem = name.endsWith('.exe') ? name.slice(0, -4) : name
+  const onedirSegment = path.join('backend', stem, name)
+  const onefileSegment = path.join('backend', name)
+
   if (app.isPackaged) {
-    return path.join(process.resourcesPath, 'backend', name)
+    const onedir  = path.join(process.resourcesPath, onedirSegment)
+    const onefile = path.join(process.resourcesPath, onefileSegment)
+    if (fs.existsSync(onedir))  return onedir
+    if (fs.existsSync(onefile)) return onefile
+    return onedir
   }
-  // Dev/unpackaged: try the PyInstaller output first, then resources/.
-  const devPath  = path.join(__dirname, '..', '..', 'backend', 'dist', name)
-  const unpacked = path.join(__dirname, '..', 'resources', 'backend', name)
-  if (fs.existsSync(devPath))  return devPath
-  if (fs.existsSync(unpacked)) return unpacked
-  return devPath  // fall back; spawn() error will surface it
+  // Dev/unpackaged: try PyInstaller dist first (both layouts), then resources/.
+  const candidates = [
+    path.join(__dirname, '..', '..', 'backend', 'dist', stem, name),  // dev onedir
+    path.join(__dirname, '..', '..', 'backend', 'dist', name),         // dev onefile
+    path.join(__dirname, '..', 'resources', onedirSegment),
+    path.join(__dirname, '..', 'resources', onefileSegment),
+  ]
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c
+  }
+  return candidates[0]
 }
 
 
