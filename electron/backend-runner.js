@@ -234,26 +234,21 @@ class Service {
       return
     }
 
-    // ── Per-Service stale-cleanup ────────────────────────────────────────
-    // Before spawning, kill any other instances of THIS specific exe. This
-    // closes the loop where a previously-spawned process survives an
-    // external kill (or self-spawned a child) and Service has no record of
-    // it — without this, every Service.start() call could leave one
-    // duplicate behind. Only kills processes we don't track ourselves
-    // (`PID ne <self>`), so the renderer + Electron main process are safe.
-    if (process.platform === 'win32') {
-      try {
-        execSync(
-          `taskkill /F /FI "IMAGENAME eq ${this.exeName}" /FI "PID ne ${process.pid}"`,
-          { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
-        )
-      } catch (e) {
-        const stderr = (e && e.stderr ? e.stderr.toString() : '').toLowerCase()
-        if (!stderr.includes('not found') && !stderr.includes('no tasks')) {
-          console.warn(`[${this.label}] pre-spawn taskkill warning:`, stderr || e.message)
-        }
-      }
-    }
+    // CRITICAL: do NOT taskkill same-named processes here.
+    //
+    // An earlier version of this file ran `taskkill /F /FI "IMAGENAME eq
+    // watchdog-backend.exe"` on every Service.start(), reasoning that it
+    // would clean up duplicates. In practice it killed the BACKEND
+    // currently running the user's bot whenever anything (Electron reload,
+    // restartCloud IPC, second app instance launch) triggered start().
+    // The bot subprocess died with the parent. The "sibling instance won
+    // the race" log line that followed was the spawn-replacement, but
+    // users (correctly) blamed the message for killing their bot.
+    //
+    // Stale cleanup happens ONCE at app boot in killStalePythonServices().
+    // That's sufficient — duplicate processes during normal operation are
+    // cosmetic (only one binds port 8000; the others exit cleanly via the
+    // pre-flight check in run_backend.py).
 
     console.log(`[${this.label}] spawning ${exePath}`)
     this.proc = spawn(exePath, [], {
