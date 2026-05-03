@@ -26,7 +26,7 @@
  */
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
-import { isLoggedIn } from '@/lib/auth'
+import { isLoggedIn, getFullSession, getToken, decodeTokenPayload } from '@/lib/auth'
 import { checkAuth, probeBackend } from '@/lib/subscription'
 import { gotoLogin } from '@/lib/app-nav'
 
@@ -69,6 +69,84 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
   const verifiedOnce = useRef(false)
   const connectedOnce = useRef(false)
   const [retryNonce, setRetryNonce] = useState(0)
+
+  // ── Electron session.json startup sync ────────────────────────────────────
+  // When the user is already "logged in" (token in localStorage from a
+  // previous session), the login page redirects to dashboard immediately
+  // without calling electronAPI.setSession() — so session.json never gets
+  // created/updated and wd_cloud.exe can't authenticate.
+  //
+  // This effect runs ONCE on mount. If we're inside Electron and the main
+  // process has no session.json (getCurrentToken returns null), we restore it
+  // from the full session stored in localStorage by the last login.
+  //
+  // This is the safety net for three scenarios:
+  //   1. User upgrades from an older build that didn't write session.json
+  //   2. User deleted / reinstalled (LOCALAPPDATA cleared)
+  //   3. session.json was corrupted or deleted by a crash
+  useEffect(() => {
+    const syncSession = async () => {
+      if (typeof window === 'undefined') return
+      const eAPI = (window as unknown as {
+        electronAPI?: {
+          getCurrentToken?: () => Promise<string | null>
+          setSession?:      (s: unknown) => Promise<{ ok?: boolean; error?: string } | unknown>
+        }
+      }).electronAPI
+      // Not running inside Electron — nothing to do.
+      if (!eAPI?.getCurrentToken || !eAPI?.setSession) return
+
+      try {
+        // session.json already readable by main process → no-op.
+        const existing = await eAPI.getCurrentToken()
+        if (existing) return
+      } catch {
+        return  // IPC failed — don't risk a bad write
+      }
+
+      // session.json is missing. Try to restore from the full session that
+      // login page stored in localStorage (preferred — includes refresh_token).
+      let sessionToRestore: unknown = getFullSession()
+
+      // Fallback: the full session isn't stored yet (user logged in on an
+      // older build). Reconstruct what we can from the plain JWT in
+      // localStorage — access_token + decoded claims. No refresh_token, so
+      // wd_cloud.py will work until the token expires (~1h), then stop.
+      // User just needs to sign out and back in once to get the full session.
+      if (!sessionToRestore) {
+        const token = getToken()
+        if (token) {
+          const payload = decodeTokenPayload(token)
+          sessionToRestore = {
+            access_token:  token,
+            refresh_token: null,
+            expires_at:    typeof payload?.exp === 'number' ? payload.exp : Math.floor(Date.now() / 1000) + 3600,
+            user_id:       typeof payload?.sub === 'string' ? payload.sub : null,
+            email:         typeof payload?.email === 'string' ? payload.email : null,
+          }
+          console.log('[AuthGate] Using JWT-only fallback (no refresh_token — sign out & in to fix permanently)')
+        }
+      }
+
+      if (!sessionToRestore) {
+        console.warn('[AuthGate] Electron session.json missing — no credentials to restore. User must sign out and sign back in.')
+        return
+      }
+
+      console.log('[AuthGate] Restoring missing session.json…')
+      try {
+        const result = await eAPI.setSession(sessionToRestore) as { ok?: boolean; error?: string }
+        if (result?.ok) {
+          console.log('[AuthGate] session.json restored ✓')
+        } else {
+          console.warn('[AuthGate] session.json restore returned not-ok:', result?.error)
+        }
+      } catch (e) {
+        console.warn('[AuthGate] session.json restore failed:', e)
+      }
+    }
+    void syncSession()
+  }, []) // run once on mount
 
   /**
    * Stage 1: connectivity probe + ONE-TIME auth check at mount.

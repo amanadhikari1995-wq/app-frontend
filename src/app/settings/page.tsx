@@ -2,8 +2,9 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Navbar, { WatchdogIcon } from '@/components/Navbar'
-import { removeToken } from '@/lib/auth'
+import { removeToken, removeFullSession } from '@/lib/auth'
 import { gotoLogin } from '@/lib/app-nav'
+import { relayClient } from '@/lib/relay-client'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type Tab   = 'account' | 'appearance' | 'notifications' | 'security' | 'guide'
@@ -508,7 +509,11 @@ export default function SettingsPage() {
   const handleTheme = (t: Theme) => { setTheme(t); applyTheme(t) }
 
   const handleLogout = () => {
+    relayClient.disconnect()  // close relay WS so a new login opens a fresh connection with the new user's token
     removeToken()             // explicit user-initiated logout
+    removeFullSession()       // clear stored full session too
+    const eAPI = (window as unknown as { electronAPI?: { clearSession?: () => Promise<unknown> } }).electronAPI
+    eAPI?.clearSession?.().catch(() => {})  // delete session.json + kill cloud connector
     gotoLogin()               // file://-aware redirect
   }
 

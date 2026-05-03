@@ -74,6 +74,54 @@ export const isLoggedIn = (): boolean => {
   return !!getToken()
 }
 
+// ── Full session storage ──────────────────────────────────────────────────────
+// Stores the complete Supabase session (access_token + refresh_token +
+// metadata) so that on subsequent Electron launches — where the user is
+// already "logged in" via the cached access_token and skips the login page —
+// AuthGate can still sync the full session to session.json for wd_cloud.py.
+//
+// Without this, session.json is only created the very first time the user
+// manually signs in; if they reinstall the app, clear LOCALAPPDATA, or the
+// file is deleted for any reason, the cloud connector can't authenticate.
+
+const FULL_SESSION_KEY = 'watchdog-session-full'
+
+export interface FullSession {
+  access_token:  string
+  refresh_token: string | null
+  expires_at:    number
+  user_id:       string | null
+  email:         string | null
+}
+
+/** Persist the full Supabase session to localStorage. */
+export const setFullSession = (session: FullSession): void => {
+  if (typeof window === 'undefined') return
+  try {
+    localStorage.setItem(FULL_SESSION_KEY, JSON.stringify(session))
+  } catch { /* quota exceeded or private-browsing */ }
+}
+
+/** Read back the full session. Returns null if absent or malformed. */
+export const getFullSession = (): FullSession | null => {
+  if (typeof window === 'undefined') return null
+  try {
+    const raw = localStorage.getItem(FULL_SESSION_KEY)
+    if (!raw) return null
+    const obj = JSON.parse(raw)
+    if (!obj || typeof obj !== 'object' || !obj.access_token) return null
+    return obj as FullSession
+  } catch {
+    return null
+  }
+}
+
+/** Clear both the access-token shortcut and the full session on logout. */
+export const removeFullSession = (): void => {
+  if (typeof window === 'undefined') return
+  try { localStorage.removeItem(FULL_SESSION_KEY) } catch { /* ignore */ }
+}
+
 /**
  * Returns the username / display name from the stored token,
  * or null if no token exists or the payload can't be decoded.

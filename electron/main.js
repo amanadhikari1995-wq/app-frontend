@@ -19,6 +19,7 @@
 const { app, BrowserWindow, shell, protocol, net, session, ipcMain } = require('electron')
 const path = require('path')
 const fs   = require('fs')
+const os   = require('os')
 const url  = require('url')
 const windowState = require('./window-state')
 const { buildMenu } = require('./app-menu')
@@ -28,6 +29,29 @@ const autoUpdater   = require('./auto-updater')
 const sessionStore  = require('./session-store')
 
 const isDev = !app.isPackaged && process.env.ELECTRON_DEV === '1'
+
+// ── Shared data directory ─────────────────────────────────────────────────────
+// MUST match the path computed by backend-runner.js and the Python backend
+// (run_backend.py / wd_cloud.py). All three write to the same folder so that
+// session.json, the SQLite DB, and log files are co-located and readable by
+// every component.
+//
+// IMPORTANT: Do NOT use app.getPath('userData') here. On Windows that returns
+// %APPDATA%\<npm-package-name> (e.g. Roaming\watchdog-frontend), while the
+// Python processes use %LOCALAPPDATA%\WatchDog — a completely different path.
+// Using app.getPath('userData') means session.json is written to the wrong
+// folder and wd_cloud.exe never finds it.
+function sharedDataDir() {
+  if (process.platform === 'win32') {
+    const base = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local')
+    return path.join(base, 'WatchDog')
+  }
+  if (process.platform === 'darwin') {
+    return path.join(os.homedir(), 'Library', 'Application Support', 'WatchDog')
+  }
+  const base = process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share')
+  return path.join(base, 'WatchDog')
+}
 
 /* ──────────────────────────────────────────────────────────────────────
    Custom `app://` protocol — serves files from out/ with proper path
@@ -283,7 +307,7 @@ ipcMain.handle('wd:set-session', async (_event, raw) => {
     if (!raw || typeof raw !== 'object' || !raw.access_token) {
       return { ok: false, error: 'invalid session payload' }
     }
-    const written = sessionStore.write(app.getPath('userData'), raw)
+    const written = sessionStore.write(sharedDataDir(), raw)
     console.log('[main] session persisted for user', written.user_id, 'email', written.email)
     // Bounce the cloud connector so it re-reads session.json with the
     // new token. Backend stays up — that runs against localhost only and
@@ -306,7 +330,7 @@ ipcMain.handle('wd:set-session', async (_event, raw) => {
 // authenticated long after the JWT it had at startup has expired.
 ipcMain.handle('wd:get-current-token', async () => {
   try {
-    const sess = sessionStore.read(app.getPath('userData'))
+    const sess = sessionStore.read(sharedDataDir())
     return sess?.access_token || null
   } catch (e) {
     console.warn('[main] wd:get-current-token failed:', e.message)
@@ -316,7 +340,7 @@ ipcMain.handle('wd:get-current-token', async () => {
 
 ipcMain.handle('wd:clear-session', async () => {
   try {
-    sessionStore.clear(app.getPath('userData'))
+    sessionStore.clear(sharedDataDir())
     console.log('[main] session cleared')
     backendRunner.restartCloud()
     return { ok: true }

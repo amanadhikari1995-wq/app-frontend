@@ -71,6 +71,7 @@ class RelayClient {
   /** Close the connection and cancel reconnection. Pending requests reject. */
   disconnect(): void {
     this.shouldRun = false
+    this.connecting = false  // reset so the next connect() after a new login isn't blocked
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null }
     if (this.ws) {
       try { this.ws.close() } catch { /* already closed */ }
@@ -81,6 +82,12 @@ class RelayClient {
       p.reject(new Error('Relay disconnected'))
     })
     this.pending.clear()
+    // Reset desktop state synchronously so listeners see offline immediately,
+    // rather than waiting for the async WebSocket close event to fire.
+    if (this._desktopOnline) {
+      this._desktopOnline = false
+      Array.from(this.desktopListeners).forEach((l) => l(false))
+    }
   }
 
   /**

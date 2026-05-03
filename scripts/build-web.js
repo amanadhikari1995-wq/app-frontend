@@ -35,7 +35,16 @@ const env = {
 
 const ROOT_FRONTEND = path.resolve(__dirname, '..');
 const OUT_DIR       = path.join(ROOT_FRONTEND, 'out');
-const TARGET_DIR    = path.resolve(ROOT_FRONTEND, '..', '..', 'website', 'public', 'app');
+// Try the sibling folder name first (watchdog-website), fall back to generic 'website'
+const _websiteDir = (() => {
+  const candidates = [
+    path.resolve(ROOT_FRONTEND, '..', '..', 'watchdog-website'),
+    path.resolve(ROOT_FRONTEND, '..', '..', 'website'),
+  ];
+  for (const c of candidates) if (fs.existsSync(c)) return c;
+  return candidates[1]; // default — will fail with a clear error below
+})();
+const TARGET_DIR    = path.join(_websiteDir, 'public', 'app');
 
 console.log('▶ Building Next.js static export with /app basePath …');
 // Run next.js binary directly. Avoids the npm wrapper layer that

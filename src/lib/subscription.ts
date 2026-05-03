@@ -18,9 +18,10 @@
  * localStorage is the only piece of identity it holds.
  */
 import { websiteAuthApi } from './websiteApi'
-import { removeToken, isLoggedIn } from './auth'
+import { removeToken, removeFullSession, isLoggedIn } from './auth'
 import { getWebsiteApiUrl } from './runtime-config'
 import { gotoLogin } from './app-nav'
+import { relayClient } from './relay-client'
 
 export type AuthFailureReason =
   | 'no_token'
@@ -140,8 +141,12 @@ export async function verifySubscription(): Promise<VerifyResult> {
  * automatically; the session persists until the user clicks Logout.
  */
 export function logoutAndRedirect(reason: AuthFailureReason | 'logged_out' = 'logged_out') {
+  relayClient.disconnect()  // close relay WS so a new login opens a fresh connection with the new user's token
   removeToken()
+  removeFullSession()
   if (typeof window === 'undefined') return
+  const eAPI = (window as unknown as { electronAPI?: { clearSession?: () => Promise<unknown> } }).electronAPI
+  eAPI?.clearSession?.().catch(() => {})
   // Use the file://-aware helper so this works in Electron AND web contexts.
   gotoLogin({ reason })
 }
