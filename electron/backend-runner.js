@@ -523,15 +523,35 @@ function restartCloud() {
     return
   }
   console.log('[backend-runner] restarting cloud connector with new session…')
-  // Reset crash counter so a fresh login gets the full 5-attempt budget
-  cloud.attempts = 0
-  cloud.stopping = false
-  if (cloud.proc) {
-    try { cloud.proc.kill('SIGTERM') } catch { /* already gone */ }
-    // Service.onExit will restart it because stopping=false
-  } else {
+  // Reset crash counter + permanent-failure flag so a fresh login gets a
+  // full respawn budget even after the previous instance crash-looped.
+  cloud.attempts          = 0
+  cloud.failedPermanently = false
+
+  if (!cloud.proc) {
+    // Nothing to kill. Just (re)start fresh.
+    cloud.stopping = false
     cloud.start()
+    return
   }
+
+  // CAREFUL: wd_cloud.py installs SIGTERM/SIGINT handlers that exit
+  // gracefully with code 0. Service._onExit treats "code === 0" as
+  // "exited cleanly, do NOT respawn" — which is correct for the
+  // sibling-detection path (run_backend.py exits 0 when another
+  // instance already won the port) but WRONG here, because we WANT
+  // it to come back. So we explicitly respawn after SIGTERM has time
+  // to flush, and set stopping=true to suppress _onExit's auto-respawn
+  // path that would otherwise race with our explicit start().
+  cloud.stopping = true
+  try { cloud.proc.kill('SIGTERM') } catch { /* already gone */ }
+  setTimeout(() => {
+    // Re-check: maybe the user signed in/out twice and stop() already
+    // ran. In that case `services` array would have been emptied — no-op.
+    if (!services.includes(cloud)) return
+    cloud.stopping = false
+    cloud.start()
+  }, 2_000)
 }
 
 
