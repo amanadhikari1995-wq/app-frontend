@@ -71,7 +71,13 @@ const HEALTH_URL  = 'http://127.0.0.1:8000/api/health'
 const HEALTH_TIMEOUT_MS = 30_000          // give it a generous 30s to boot
 const HEALTH_INTERVAL_MS = 250
 
-const RESTART_BACKOFF_MS = [1_000, 2_000, 5_000, 15_000, 30_000]
+// Backoff schedule for crash respawns (ms). Bumped from 5 attempts to 8
+// because a fresh-install antivirus scan can hold the bundled exe for
+// 20-40 seconds on the first launch — and giving up after 5 attempts in
+// that window means the user sees "backend unreachable" forever even
+// though the AV would have released the file shortly after. The final
+// 60s slot gives a slow scanner enough time to clear before we quit.
+const RESTART_BACKOFF_MS = [1_000, 2_000, 5_000, 10_000, 15_000, 30_000, 45_000, 60_000]
 const MAX_RESTARTS       = RESTART_BACKOFF_MS.length
 
 // One supervisor per service so they restart independently.
@@ -330,6 +336,30 @@ class Service {
     }
     if (this.attempts >= MAX_RESTARTS) {
       console.error(`[${this.label}] crashed too many times (${this.attempts}). Giving up.`)
+      // Mark this Service as permanently failed so the rest of the app
+      // (renderer health probe, IPC consumers) can show a real error
+      // surface instead of a perpetual "backend unreachable, retrying…"
+      // spinner. The renderer pings probeOnce() every 2s anyway; once
+      // it sees `failedPermanently` it can swap UI to a clearer panel
+      // pointing at backend.log + backend.crash.log.
+      this.failedPermanently = true
+      try {
+        const { app: electronApp, BrowserWindow } = require('electron')
+        // Notify all open renderer windows. They can listen via
+        //   window.electronAPI.onBackendFailed?.((info) => …)
+        // (or main.js can wire an IPC channel — keeping this best-effort).
+        for (const win of BrowserWindow.getAllWindows()) {
+          win.webContents.send('backend:failed-permanently', {
+            label:    this.label,
+            exeName:  this.exeName,
+            attempts: this.attempts,
+            crashLogHint: 'Check %LOCALAPPDATA%\\WatchDog\\logs\\backend.crash.log for the failure reason.',
+          })
+        }
+      } catch (e) {
+        // Either we're in a headless context or no windows exist yet.
+        // Either way, the failure is logged above, so this is just polish.
+      }
       return
     }
     const delay = RESTART_BACKOFF_MS[this.attempts] || 30_000
