@@ -1,8 +1,8 @@
 {
   "name": "watchdog-frontend",
-  "version": "3.5.11",
+  "version": "3.5.12",
   "private": true,
-  "description": "WATCH-DOG — universal AI bot platform desktop app",
+  "description": "WATCH-DOG \u2014 universal AI bot platform desktop app",
   "author": {
     "name": "Aman Adhikari",
     "email": "noreply@watchdogbot.cloud"
@@ -51,7 +51,7 @@
   "build": {
     "appId": "cloud.watchdogbot.app",
     "productName": "WatchDog",
-    "copyright": "Copyright © 2026 WatchDog",
+    "copyright": "Copyright \u00a9 2026 WatchDog",
     "directories": {
       "output": "dist-electron",
       "buildResources": "build"
@@ -73,12 +73,16 @@
       {
         "from": "../backend/dist/watchdog-backend",
         "to": "backend/watchdog-backend",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       },
       {
         "from": "../backend/dist/watchdog-cloud",
         "to": "backend/watchdog-cloud",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "asar": true,
