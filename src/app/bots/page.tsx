@@ -591,6 +591,7 @@ export default function BotsPage() {
   const [bots,    setBots]    = useState<Bot[]>([])
   const [loading, setLoading] = useState(true)
   const [botActionErr, setBotActionErr] = useState('')
+  const [netErr,  setNetErr]  = useState(false)
 
   // Create modal
   const [modal,    setModal]    = useState(false)
@@ -672,13 +673,16 @@ export default function BotsPage() {
       const r = await botsApi.getAll()
       const fresh: Bot[] = r.data
       setBots(fresh)
+      setNetErr(false)
       // Keep the open panel's bot object in sync (status, run_count, etc.)
       setPanel(prev => {
         if (!prev) return prev
         const updated = fresh.find(b => b.id === prev.id)
         return updated ?? prev
       })
-    } catch {}
+    } catch {
+      setNetErr(true)
+    }
     setLoading(false)
   }, [])
 
@@ -1214,6 +1218,25 @@ export default function BotsPage() {
             <button onClick={() => setBotActionErr('')} className="ml-auto text-red-400/60 hover:text-red-400">✕</button>
           </div>
         )}
+
+        {/* Desktop offline / backend-unreachable banner */}
+        {netErr && (() => {
+          const isWeb = typeof window !== 'undefined' &&
+                        /^https?:/i.test(window.location.protocol) &&
+                        !(window as unknown as { electronAPI?: unknown }).electronAPI
+          return (
+            <div className="flex items-center gap-3 px-4 py-3 rounded-xl mb-6 text-sm"
+              style={{ background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.2)', color: '#f59e0b' }}>
+              <svg className="w-5 h-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+              </svg>
+              {isWeb
+                ? <>Your desktop app appears to be offline. Open WatchDog on your PC and sign in with the same account to use this dashboard.</>
+                : <>Local backend unreachable — retrying… Check that the bundled backend is running.</>
+              }
+            </div>
+          )
+        })()}
 
         {/* Header */}
         <div className="flex items-center justify-between mb-10">
