@@ -340,6 +340,17 @@ if (!__gotLock) {
 }
 
 app.whenReady().then(async () => {
+  // CRITICAL: re-check the single-instance lock here. The lock is
+  // requested at module-load time, but app.whenReady fires regardless
+  // of whether app.quit() has been called. Without this guard, a
+  // second-instance launch races to spawn its own backend before its
+  // own quit propagates, causing the "sibling won the race" message
+  // 3+ minutes after first launch.
+  if (!__gotLock) {
+    console.log('[main] whenReady aborted — second-instance lock not held')
+    return
+  }
+
   registerAppProtocol()    // must be done after app ready, before first load
   installCorsBypass()      // make localhost API calls work regardless of backend CORS config
 
