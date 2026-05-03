@@ -296,6 +296,24 @@ ipcMain.handle('wd:set-session', async (_event, raw) => {
   }
 })
 
+// Returns the always-fresh access_token from session.json. The Python
+// sync_engine already keeps this file refreshed every ~minute when the JWT
+// is about to expire, so renderers can poll us instead of running their
+// own refresh logic — which would race with sync_engine and produce
+// "refresh_token already used" errors from Supabase.
+//
+// Used by src/lib/supabase.ts to keep the renderer's Supabase client
+// authenticated long after the JWT it had at startup has expired.
+ipcMain.handle('wd:get-current-token', async () => {
+  try {
+    const sess = sessionStore.read(app.getPath('userData'))
+    return sess?.access_token || null
+  } catch (e) {
+    console.warn('[main] wd:get-current-token failed:', e.message)
+    return null
+  }
+})
+
 ipcMain.handle('wd:clear-session', async () => {
   try {
     sessionStore.clear(app.getPath('userData'))

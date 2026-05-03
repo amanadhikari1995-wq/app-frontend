@@ -59,6 +59,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   clearSession: () => ipcRenderer.invoke('wd:clear-session'),
 
   /**
+   * Returns the latest access_token from session.json (or null in web mode
+   * where electronAPI is undefined entirely). The Python sync_engine keeps
+   * that file refreshed when the JWT nears expiry, so the renderer can
+   * poll this and re-apply the fresh token to its Supabase client without
+   * running its own refresh logic (which would race with sync_engine).
+   */
+  getCurrentToken: () => ipcRenderer.invoke('wd:get-current-token'),
+
+  /**
    * Subscribe to the 'backend:failed-permanently' event that
    * backend-runner.js fires when its supervisor finally gives up after
    * all respawn attempts. Renderer can use this to swap the perpetual
