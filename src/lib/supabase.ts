@@ -25,12 +25,17 @@ import { getWebsiteApiUrl } from './runtime-config'
 const TOKEN_KEY = 'watchdog-token'
 const REFRESH_INTERVAL_MS = 30_000   // 30s — short enough to recover quickly
 
-declare global {
-  interface Window {
-    electronAPI?: {
-      getCurrentToken?: () => Promise<string | null>
-    }
-  }
+// Local view of the electronAPI shape we use here. We don't `declare global`
+// it because BackendCrashOverlay.tsx already does that with a different
+// subset of fields, and TypeScript rejects duplicate interface declarations
+// where the same property has different types. A narrow cast at the call
+// site is enough — runtime check still gates the call.
+interface ElectronTokenAPI {
+  getCurrentToken?: () => Promise<string | null>
+}
+function getElectronAPI(): ElectronTokenAPI | undefined {
+  if (typeof window === 'undefined') return undefined
+  return (window as unknown as { electronAPI?: ElectronTokenAPI }).electronAPI
 }
 
 let _client:        SupabaseClient | null = null
@@ -64,9 +69,10 @@ function readTokenSync(): string | null {
  * "refresh_token already used".
  */
 async function readFreshToken(): Promise<string | null> {
-  if (typeof window !== 'undefined' && window.electronAPI?.getCurrentToken) {
+  const api = getElectronAPI()
+  if (api?.getCurrentToken) {
     try {
-      const t = await window.electronAPI.getCurrentToken()
+      const t = await api.getCurrentToken()
       if (t) return t
     } catch { /* IPC failure → fall through to localStorage */ }
   }
