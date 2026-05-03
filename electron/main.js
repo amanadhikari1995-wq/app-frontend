@@ -309,6 +309,36 @@ ipcMain.handle('wd:clear-session', async () => {
 })
 
 
+// ──────────────────────────────────────────────────────────────────────
+//  SINGLE-INSTANCE LOCK
+// ──────────────────────────────────────────────────────────────────────
+// Without this lock, double-clicking the WatchDog icon, hitting the
+// Start menu twice, or auto-update relaunching mid-session creates a
+// SECOND app instance. Each instance runs backendRunner.start() →
+// killStalePythonServices() → kills the OTHER instance's bundled
+// Python services → spawns its own. Race condition produces zombie
+// backend processes and was the actual cause of users seeing
+// "sibling won the race" messages plus duplicate processes.
+//
+// requestSingleInstanceLock() makes the second launch attempt fail
+// gracefully (we focus the existing window instead) — guaranteeing
+// exactly one backendRunner per machine.
+const __gotLock = app.requestSingleInstanceLock()
+if (!__gotLock) {
+  console.log('[main] another WatchDog instance is already running — exiting this one.')
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    // A second launch attempt: just bring our existing window to the front.
+    const wins = require('electron').BrowserWindow.getAllWindows()
+    const win = wins[0]
+    if (win) {
+      if (win.isMinimized()) win.restore()
+      win.focus()
+    }
+  })
+}
+
 app.whenReady().then(async () => {
   registerAppProtocol()    // must be done after app ready, before first load
   installCorsBypass()      // make localhost API calls work regardless of backend CORS config
