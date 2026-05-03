@@ -57,4 +57,27 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   /** Tell main to clear the session file + kill the cloud connector. */
   clearSession: () => ipcRenderer.invoke('wd:clear-session'),
+
+  /**
+   * Subscribe to the 'backend:failed-permanently' event that
+   * backend-runner.js fires when its supervisor finally gives up after
+   * all respawn attempts. Renderer can use this to swap the perpetual
+   * "backend unreachable, retrying…" spinner for a real error panel
+   * pointing at backend.crash.log.
+   *
+   * Returns an unsubscribe function so the caller can clean up.
+   *
+   *   const off = window.electronAPI.onBackendFailed?.((info) => {
+   *     setBackendDown(info)   // info.label, info.exeName, info.attempts, info.crashLogHint
+   *   })
+   *   return () => off?.()
+   */
+  onBackendFailed: (cb) => {
+    if (typeof cb !== 'function') return () => {}
+    const handler = (_event, info) => {
+      try { cb(info) } catch (e) { console.error('[onBackendFailed]', e) }
+    }
+    ipcRenderer.on('backend:failed-permanently', handler)
+    return () => ipcRenderer.removeListener('backend:failed-permanently', handler)
+  },
 })

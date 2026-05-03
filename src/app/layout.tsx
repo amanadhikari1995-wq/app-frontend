@@ -4,6 +4,7 @@ import PageTransition from '@/components/PageTransition'
 import RightSidebar from '@/components/RightSidebar'
 import AuthGate from '@/components/AuthGate'
 import BackToSiteButton from '@/components/BackToSiteButton'
+import BackendCrashOverlay from '@/components/BackendCrashOverlay'
 import './globals.css'
 
 export const metadata: Metadata = {
@@ -74,6 +75,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <FloatingChatButton />
           <BackToSiteButton />
         </AuthGate>
+        {/* Renders ONLY when backend-runner.js fires
+            'backend:failed-permanently' via IPC (i.e. supervisor gave up
+            after exhausting respawn budget). No-op in the web build. */}
+        <BackendCrashOverlay />
       </body>
     </html>
   )
