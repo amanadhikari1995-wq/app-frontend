@@ -301,12 +301,9 @@ class Service {
       console.log(`[${this.label}] stopped (code=${code} signal=${signal})`)
       return
     }
-    // Clean exit (code 0) = the Python side decided to exit on purpose
-    // (e.g. port-already-in-use pre-flight check returned cleanly because
-    // a sibling instance is already serving). Don't respawn — that would
-    // create duplicate processes. The sibling is doing the job.
+    // Clean exit (code 0) = Python's pre-flight detected a sibling and bailed.
     if (code === 0) {
-      console.log(`[${this.label}] exited cleanly (code=0) — assuming a sibling is serving. No respawn.`)
+      console.log(`[${this.label}] exited cleanly (code=0). No respawn.`)
       return
     }
     if (this.attempts >= MAX_RESTARTS) {
@@ -316,7 +313,27 @@ class Service {
     const delay = RESTART_BACKOFF_MS[this.attempts] || 30_000
     this.attempts += 1
     console.warn(`[${this.label}] exited (code=${code}); restart in ${delay}ms (attempt ${this.attempts}/${MAX_RESTARTS})`)
-    setTimeout(() => { if (!this.stopping) this.start() }, delay)
+    setTimeout(() => {
+      if (this.stopping) return
+      // Re-check: if another instance is now alive (because the dying
+      // proc had a sibling that's still up, or because some other code
+      // path spawned one), do NOT add a duplicate. start() itself
+      // re-checks too — this is just an early-out to skip the noise.
+      if (process.platform === 'win32') {
+        try {
+          const out = execSync(
+            `tasklist /FI "IMAGENAME eq ${this.exeName}" /FO CSV /NH`,
+            { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, encoding: 'utf8' },
+          )
+          const alive = out.split('\n').filter(l => l.startsWith(`"${this.exeName}"`))
+          if (alive.length > 0) {
+            console.log(`[${this.label}] respawn skipped — ${alive.length} instance(s) of ${this.exeName} already alive`)
+            return
+          }
+        } catch { /* fall through to start() */ }
+      }
+      this.start()
+    }, delay)
   }
 
   stop() {
