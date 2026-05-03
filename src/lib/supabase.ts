@@ -184,11 +184,12 @@ export function getSupabase(): Promise<SupabaseClient> {
  */
 export function refreshSupabaseAuth(): void {
   if (!_client) return
-  const token = readToken()
+  const token = readTokenSync()
   if (!token) return
   _client.realtime.setAuth(token)
   // Refresh the global headers for HTTP calls. Supabase JS doesn't expose
   // a public setter, so we replace the client on next getSupabase() call.
   _client = null
   _initOnce = null
+  _currentToken = null
 }
