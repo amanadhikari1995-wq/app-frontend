@@ -234,21 +234,41 @@ class Service {
       return
     }
 
-    // CRITICAL: do NOT taskkill same-named processes here.
+    // CRITICAL: do NOT taskkill same-named processes here. (Earlier version
+    // of this code did, and it killed the user's running bot — see commit
+    // 5463cfc.)
     //
-    // An earlier version of this file ran `taskkill /F /FI "IMAGENAME eq
-    // watchdog-backend.exe"` on every Service.start(), reasoning that it
-    // would clean up duplicates. In practice it killed the BACKEND
-    // currently running the user's bot whenever anything (Electron reload,
-    // restartCloud IPC, second app instance launch) triggered start().
-    // The bot subprocess died with the parent. The "sibling instance won
-    // the race" log line that followed was the spawn-replacement, but
-    // users (correctly) blamed the message for killing their bot.
-    //
-    // Stale cleanup happens ONCE at app boot in killStalePythonServices().
-    // That's sufficient — duplicate processes during normal operation are
-    // cosmetic (only one binds port 8000; the others exit cleanly via the
-    // pre-flight check in run_backend.py).
+    // INSTEAD: detect-and-skip. If another instance of this exe is already
+    // alive on this machine, we don't spawn a new one — the existing one is
+    // doing the job. This eliminates the "sibling instance won the race"
+    // log noise users were seeing, because no second instance gets spawned
+    // in the first place. Source of duplicates was likely Electron multi-
+    // process boot ordering or restartCloud IPC firing before the existing
+    // service was tracked.
+    if (process.platform === 'win32') {
+      try {
+        const out = execSync(
+          `tasklist /FI "IMAGENAME eq ${this.exeName}" /FO CSV /NH`,
+          { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, encoding: 'utf8' },
+        )
+        // tasklist prints "INFO: No tasks..." when nothing matches, OR a CSV
+        // line per matching process when something does.
+        const matches = out.split('\n').filter(line =>
+          line.startsWith(`"${this.exeName}"`),
+        )
+        if (matches.length > 0) {
+          console.log(`[${this.label}] ${matches.length} instance(s) of ${this.exeName} already running — skipping spawn`)
+          // Mark this Service as "owning" the existing process so stop()
+          // works. We don't have a Process handle for it, but we can no-op
+          // on stop and rely on app-quit kill-stale to clean up.
+          this.proc = null
+          return
+        }
+      } catch (e) {
+        // tasklist failure is non-fatal — fall through to spawn anyway.
+        console.warn(`[${this.label}] pre-spawn tasklist check failed:`, e.message)
+      }
+    }
 
     console.log(`[${this.label}] spawning ${exePath}`)
     this.proc = spawn(exePath, [], {
@@ -399,6 +419,22 @@ async function start() {
 function stopAll() {
   console.log('[backend-runner] stopping all services...')
   for (const s of services) s.stop()
+  // Belt-and-braces: a Service whose start() short-circuited via the
+  // skip-if-already-running path has proc=null, so its stop() can't kill
+  // anything. Do an OS-level taskkill of all bundled exes by name on the
+  // way out so users don't see leftover processes after they quit the app.
+  if (process.platform === 'win32') {
+    for (const exe of [BACKEND_EXE, CLOUD_EXE]) {
+      try {
+        execSync(
+          `taskkill /F /FI "IMAGENAME eq ${exe}" /FI "PID ne ${process.pid}"`,
+          { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
+        )
+      } catch {
+        /* nothing to kill — fine */
+      }
+    }
+  }
 }
 
 
