@@ -1,0 +1,86 @@
+name: Build & Deploy Web Dashboard
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Triggers:
+#   • Every push to main (code changes, bug fixes, features)
+#   • Manual trigger from the GitHub Actions tab ("Run workflow")
+# ─────────────────────────────────────────────────────────────────────────────
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    name: Build Next.js → Deploy to watchdog-website
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Check out the frontend source ───────────────────────────────────
+      - name: Checkout app-frontend
+        uses: actions/checkout@v4
+
+      # ── 2. Node.js + dependency cache ──────────────────────────────────────
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # ── 3. Build the static Next.js export ─────────────────────────────────
+      #   Mirrors exactly what build-web.js does locally:
+      #     BASE_PATH=/app          → all routes + assets served at /app/
+      #     NEXT_PUBLIC_TRANSPORT=relay → web mode (uses cloud relay WS)
+      #     NEXT_PUBLIC_WEBSITE_API_URL → points to the live server
+      - name: Build Next.js static export
+        env:
+          BASE_PATH: /app
+          NEXT_PUBLIC_BASE_PATH: /app
+          NEXT_PUBLIC_TRANSPORT: relay
+          NEXT_PUBLIC_WEBSITE_API_URL: https://watchdogbot.cloud
+          # Prevent Git Bash / MSYS2 from mangling "/app" paths (Linux no-op)
+          MSYS_NO_PATHCONV: '1'
+        run: npx next build
+
+      # ── 4. Check out the website repo (needs DEPLOY_TOKEN secret) ──────────
+      #   DEPLOY_TOKEN = a GitHub Personal Access Token (classic) with
+      #   repo scope, stored in app-frontend → Settings → Secrets → Actions
+      #   as "DEPLOY_TOKEN".
+      - name: Checkout watchdog-website
+        uses: actions/checkout@v4
+        with:
+          repository: amanadhikari1995-wq/watchdog-website
+          token: ${{ secrets.DEPLOY_TOKEN }}
+          path: watchdog-website
+
+      # ── 5. Replace public/app with the fresh build ─────────────────────────
+      - name: Sync build output → watchdog-website/public/app
+        run: |
+          # Wipe old build
+          rm -rf watchdog-website/public/app
+          # Copy new build
+          cp -r out watchdog-website/public/app
+          echo "✓ Copied $(find watchdog-website/public/app -type f | wc -l) files"
+
+      # ── 6. Commit and push (only when there are actual changes) ────────────
+      - name: Push to watchdog-website
+        working-directory: watchdog-website
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add public/app
+          # Exit 0 silently if nothing changed (idempotent deploys)
+          if git diff --cached --quiet; then
+            echo "ℹ No changes to deploy — watchdog-website already up to date."
+          else
+            git commit -m "chore: deploy web dashboard from app-frontend@${{ github.sha }}
+
+Built from commit: ${{ github.sha }}
+Triggered by: ${{ github.actor }}
+Branch: ${{ github.ref_name }}"
+            git push
+            echo "✅ Deployed to watchdog-website/public/app"
+          fi
