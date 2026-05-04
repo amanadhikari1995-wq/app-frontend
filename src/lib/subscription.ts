@@ -22,7 +22,6 @@ import { removeToken, removeFullSession, isLoggedIn } from './auth'
 import { getWebsiteApiUrl } from './runtime-config'
 import { gotoLogin } from './app-nav'
 import { relayClient } from './relay-client'
-import { destroySupabaseClient } from './supabase'
 
 export type AuthFailureReason =
   | 'no_token'
@@ -137,42 +136,18 @@ export async function verifySubscription(): Promise<VerifyResult> {
 }
 
 /**
- * Manually log the user out — only called from the explicit Logout button or
- * sign-in flow.  AuthGate / interceptors never call this automatically; the
- * session persists until the user clicks Logout.
- *
- * Teardown order matters:
- *   1. Relay WS — rejects all pending requests immediately so UI shows offline
- *   2. Supabase client — removes realtime channels, stops the token-refresh
- *      poller, and clears the singleton so the next login gets a clean client
- *   3. Tokens — removes JWT from localStorage + cookie
- *   4. Full session — removes refresh_token / metadata from localStorage
- *   5. Electron IPC — deletes session.json and bounces wd_cloud.py so the
- *      Python relay stops authenticating as this user
- *   6. Navigate to /login
+ * Manually log the user out — only called from the explicit Logout
+ * button or sign-in flow. AuthGate / interceptors never call this
+ * automatically; the session persists until the user clicks Logout.
  */
 export function logoutAndRedirect(reason: AuthFailureReason | 'logged_out' = 'logged_out') {
-  // 1. Close the relay WebSocket and cancel all in-flight requests.
-  //    Also clears the subs map and resets reconnect back-off.
-  relayClient.disconnect()
-
-  // 2. Tear down the Supabase singleton (stops timer, removes channels).
-  //    Must happen BEFORE removeToken() so realtime unsubscribe messages
-  //    can still carry a valid Authorization header.
-  destroySupabaseClient()
-
-  // 3 & 4. Clear the JWT and full session from localStorage / cookie.
+  relayClient.disconnect()  // close relay WS so a new login opens a fresh connection with the new user's token
   removeToken()
   removeFullSession()
-
   if (typeof window === 'undefined') return
-
-  // 5. Tell the Electron main process to delete session.json and restart
-  //    wd_cloud.py.  Non-fatal — web mode has no Electron IPC.
   const eAPI = (window as unknown as { electronAPI?: { clearSession?: () => Promise<unknown> } }).electronAPI
   eAPI?.clearSession?.().catch(() => {})
-
-  // 6. Navigate to the login page.
+  // Use the file://-aware helper so this works in Electron AND web contexts.
   gotoLogin({ reason })
 }
 

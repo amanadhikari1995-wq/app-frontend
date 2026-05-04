@@ -178,55 +178,18 @@ export function getSupabase(): Promise<SupabaseClient> {
 
 
 /**
- * Fully tear down the Supabase singleton so the next `getSupabase()` call
- * creates a completely fresh client for the new user.
- *
- * Call this on logout BEFORE clearing the token from localStorage, so any
- * in-flight realtime channels get a graceful close while the auth header
- * is still present.  `subscription.ts → logoutAndRedirect()` does this.
- */
-export function destroySupabaseClient(): void {
-  // Stop the periodic token-refresh poller
-  if (_refreshTimer) {
-    clearInterval(_refreshTimer)
-    _refreshTimer = null
-  }
-  // Remove all realtime subscriptions before dropping the client
-  if (_client) {
-    try { void _client.removeAllChannels() } catch { /* best-effort */ }
-    _client = null
-  }
-  _initOnce = null
-  _currentToken = null
-}
-
-/**
  * Notify the Supabase client that the JWT changed (e.g. user just signed in
- * on a page that previously had no token, or the token was refreshed by the
- * desktop sync-engine).  Call this from your auth flow after writing the
- * new token to localStorage.
- *
- * If no client exists yet (first login, or called after destroySupabaseClient)
- * this is a no-op — the next getSupabase() will build a fresh client with the
- * correct token automatically.
+ * on a page that previously had no token, or the token got refreshed).
+ * Call this from your auth flow after writing the new token to localStorage.
  */
 export function refreshSupabaseAuth(): void {
-  // Always stop the stale poller first — even if _client is null, there may
-  // be a lingering timer from a previous client that was cleared without being
-  // fully destroyed (e.g. a previous call to this same function).
-  if (_refreshTimer) {
-    clearInterval(_refreshTimer)
-    _refreshTimer = null
-  }
-  if (!_client) return   // no live client — next getSupabase() creates one fresh
+  if (!_client) return
   const token = readTokenSync()
   if (!token) return
-  // Null out the client so the next getSupabase() call rebuilds it with the
-  // new token in the global headers (supabase-js v2 doesn't have a public
-  // "replace JWT" API that also resets REST headers cleanly).
+  _client.realtime.setAuth(token)
+  // Refresh the global headers for HTTP calls. Supabase JS doesn't expose
+  // a public setter, so we replace the client on next getSupabase() call.
   _client = null
   _initOnce = null
   _currentToken = null
-  // Timer restarts inside the next getSupabase() init — no need to call
-  // ensureRefresher() here because _client is now null.
 }
