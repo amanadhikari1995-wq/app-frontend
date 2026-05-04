@@ -68,20 +68,33 @@ class RelayClient {
     this._open()
   }
 
-  /** Close the connection and cancel reconnection. Pending requests reject. */
+  /** Close the connection and cancel reconnection. Pending requests reject.
+   *
+   * Full teardown — safe to call on user logout.  After this returns the
+   * client is in an identical state to a brand-new construction so the next
+   * `connect()` (called e.g. by the first request after a new login) opens a
+   * fresh WebSocket authenticated as the new user.
+   */
   disconnect(): void {
     this.shouldRun = false
-    this.connecting = false  // reset so the next connect() after a new login isn't blocked
+    this.connecting = false      // let the next connect() call pass the guard
+    this.reconnectDelay = RECONNECT_BASE_MS   // reset backoff so new user doesn't wait
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null }
     if (this.ws) {
       try { this.ws.close() } catch { /* already closed */ }
       this.ws = null
     }
+    // Reject all in-flight requests so callers don't hang
     Array.from(this.pending.values()).forEach((p) => {
       clearTimeout(p.timer)
       p.reject(new Error('Relay disconnected'))
     })
     this.pending.clear()
+
+    // Clear topic subscriptions — they belong to the previous user's session.
+    // Components re-subscribe when they remount in the new user's session.
+    this.subs.clear()
+
     // Reset desktop state synchronously so listeners see offline immediately,
     // rather than waiting for the async WebSocket close event to fire.
     if (this._desktopOnline) {

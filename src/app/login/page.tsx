@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { setToken, isLoggedIn, setFullSession } from '@/lib/auth'
+import { refreshSupabaseAuth } from '@/lib/supabase'
 import { websiteAuthApi } from '@/lib/websiteApi'
 import WatchdogLogo from '@/components/WatchdogLogo'
 import { gotoDashboard } from '@/lib/app-nav'
@@ -163,7 +164,17 @@ export default function LoginPage() {
   }
 
   const redirectAfterLogin = (token: string, username?: string) => {
+    // 1. Persist the new JWT to localStorage + cookie so every downstream
+    //    consumer (axios interceptors, relay-client, supabase-data) sees it.
     setToken(token)
+
+    // 2. Invalidate any live Supabase singleton that may still hold a
+    //    previous user's JWT.  This is a no-op when no client exists yet
+    //    (first login), and a full reset when the user is switching accounts.
+    //    The next getSupabase() call will create a fresh client authenticated
+    //    as this user.
+    refreshSupabaseAuth()
+
     const displayName = username ? `Welcome back, ${username}!` : 'Login successful!'
     setToast({ message: `✓ ${displayName} Redirecting…`, type: 'success' })
     setTimeout(() => {
