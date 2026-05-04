@@ -1,4 +1,4 @@
-import type { Metadata, Viewport } from 'next'
+import type { Metadata } from 'next'
 import FloatingChatButton from '@/components/FloatingChatButton'
 import PageTransition from '@/components/PageTransition'
 import RightSidebar from '@/components/RightSidebar'
@@ -10,12 +10,6 @@ import './globals.css'
 export const metadata: Metadata = {
   title: 'WATCH-DOG | Universal Bot Platform',
   description: 'Run any type of bot with your own Python code',
-}
-
-export const viewport: Viewport = {
-  width: 'device-width',
-  initialScale: 1,
-  maximumScale: 5,
 }
 
 function WatchdogWatermark() {

@@ -926,14 +926,14 @@ export default function DashboardPage() {
       <div className="flex items-start" style={{minHeight:`calc(100vh - ${NAVBAR_H}px)`}}>
 
         {/* CENTER — fills the 60vw between left + right sidebars */}
-        <main className="min-w-0 px-4 sm:px-8 py-6 sm:py-8 flex flex-col" style={{width:'100%', height:`calc(100vh - ${NAVBAR_H}px)`, overflowY:'auto'}}>
+        <main className="min-w-0 px-8 py-8 flex flex-col" style={{width:'100%', height:`calc(100vh - ${NAVBAR_H}px)`, overflowY:'auto'}}>
 
           <div className="mb-8">
             <h1 className="text-3xl font-bold text-white">Dashboard</h1>
           </div>
 
           {/* Stat cards */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-4 mb-8">
+          <div className="grid grid-cols-5 gap-4 mb-8">
             {statCards.map((c,i) => (
               <div key={i} className="rounded-2xl p-5 transition-all hover:scale-[1.02]" style={CARD}>
                 <div className="flex items-start justify-between mb-4">
@@ -958,7 +958,7 @@ export default function DashboardPage() {
           </div>
 
           {/* My Bots + Live Activity */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-4 flex-1 min-h-0">
+          <div className="grid grid-cols-2 gap-6 mb-4 flex-1 min-h-0">
 
             {/* My Bots */}
             <div className="rounded-2xl overflow-hidden flex flex-col" style={CARD}>

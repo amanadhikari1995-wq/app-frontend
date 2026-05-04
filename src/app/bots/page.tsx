@@ -1501,7 +1501,7 @@ export default function BotsPage() {
           {/* Panel */}
           <div className="fixed right-0 top-0 h-full z-50 flex flex-col overflow-hidden"
             style={{
-              width: 'min(600px, 100vw)',
+              width: '600px',
               background: 'rgba(6,9,20,0.97)',
               borderLeft: '1px solid rgba(255,255,255,0.09)',
               backdropFilter: 'blur(30px)',
