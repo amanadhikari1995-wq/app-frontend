@@ -765,4 +765,19 @@ input, textarea, select { font-family: inherit; }
   aside[class*="fixed"][class*="right-0"] {
     display: none;
   }
+
+  /* Tighten horizontal padding on main content areas */
+  main, section, .page {
+    padding-left:  20px;
+    padding-right: 20px;
+  }
+}
+
+/* Bots side panel: never wider than viewport on small screens */
+@media (max-width: 599px) {
+  /* The fixed panel uses inline width: min(600px,100vw) which handles this,
+     but ensure the panel header/body text doesn't overflow either */
+  .fixed.right-0.top-0.z-50 {
+    border-left: none !important;
+  }
 }
