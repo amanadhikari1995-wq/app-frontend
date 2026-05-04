@@ -18,6 +18,25 @@
 
 import { getSupabase } from './supabase'
 
+/**
+ * Decode the Supabase JWT stored in localStorage and return the
+ * user's UUID (the `sub` field). Used to populate `user_id` on INSERT
+ * so that Supabase's RLS policy `auth.uid() = user_id` passes.
+ */
+function getAuthUserId(): string {
+  try {
+    const token =
+      (typeof window !== 'undefined' && window.localStorage.getItem('watchdog-token')) || ''
+    if (!token) throw new Error('no token')
+    const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')))
+    const uid = payload.sub as string | undefined
+    if (!uid) throw new Error('no sub')
+    return uid
+  } catch {
+    throw new Error('Not authenticated — could not read user ID from token')
+  }
+}
+
 // ── Shared types ──────────────────────────────────────────────────────────────
 
 export interface SbBot {
@@ -140,6 +159,7 @@ export const sbBotsApi = {
     const { data, error } = await sb
       .from('bots')
       .insert({
+        user_id:                 getAuthUserId(),   // required by RLS
         name:                    fields.name,
         description:             fields.description ?? null,
         code:                    fields.code,
@@ -283,6 +303,7 @@ export const sbConnectionsApi = {
     const { data, error } = await sb
       .from('api_connections')
       .insert({
+        user_id:    getAuthUserId(),   // required by RLS
         bot_id:     fields.bot_id     ?? null,
         name:       fields.name,
         base_url:   fields.base_url   ?? null,
