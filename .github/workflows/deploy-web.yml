@@ -76,11 +76,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "ℹ No changes to deploy — watchdog-website already up to date."
           else
-            git commit -m "chore: deploy web dashboard from app-frontend@${{ github.sha }}
-
-Built from commit: ${{ github.sha }}
-Triggered by: ${{ github.actor }}
-Branch: ${{ github.ref_name }}"
+            git commit -m "chore: deploy web dashboard from app-frontend@${{ github.sha }} | by ${{ github.actor }} on ${{ github.ref_name }}"
             git push
             echo "✅ Deployed to watchdog-website/public/app"
           fi
