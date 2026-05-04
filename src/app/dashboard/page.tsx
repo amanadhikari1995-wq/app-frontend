@@ -3,6 +3,8 @@ import { useEffect, useState, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { dashboardApi, botsApi, connectionsApi, systemApi } from '@/lib/api'
+import { sbBotsApi, sbDashboardApi, sbConnectionsApi } from '@/lib/supabase-data'
+import { getTransportMode } from '@/lib/runtime-config'
 import { formatTimeCT, todayLongCT, timeAgo } from '@/lib/time'
 import Navbar, { useTradeMode } from '@/components/Navbar'
 import { useOnlineStatus } from '@/hooks/useOnlineStatus'
@@ -12,8 +14,8 @@ import {
 } from 'recharts'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-interface Log     { id: number; bot_id: number; level: string; message: string; created_at: string }
-interface Bot     { id: number; name: string; status: string; run_count: number; last_run_at: string | null }
+interface Log     { id: string | number; bot_id: string | number; level: string; message: string; created_at: string }
+interface Bot     { id: string | number; name: string; status: string; run_count: number; last_run_at: string | null }
 interface Stats   { total_bots: number; running_bots: number; total_runs: number; total_trades: number; recent_logs: Log[] }
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -73,11 +75,14 @@ const PIE_COLOR: Record<string,string> = {
   IDLE:'#1e3a4a', RUNNING:'#00f5ff', ERROR:'#ff4444', STOPPED:'#f59e0b',
 }
 const BOT_PALETTE = ['#60a5fa','#34d399','#fb923c','#a78bfa','#f472b6','#facc15','#38bdf8']
-function botColor(id: number) { return BOT_PALETTE[(id - 1) % BOT_PALETTE.length] }
+function botColor(id: string | number) {
+  const n = typeof id === 'number' ? id : (parseInt(String(id).replace(/-/g,'').slice(0,8), 16) || 1)
+  return BOT_PALETTE[(Math.abs(n) - 1) % BOT_PALETTE.length]
+}
 
 // ─── Activity event parsed from a structured bot log ─────────────────────────
 interface ActivityEvent {
-  id: number; bot_id: number; botName: string
+  id: string | number; bot_id: string | number; botName: string
   type: 'ENTER' | 'EXIT' | 'SCALE' | 'WIN' | 'LOSS' | 'RAW'
   label: string; detail: string; ts: string; color: string
 }
@@ -147,23 +152,27 @@ function parseTag(msg: string): {tag:string;body:string} {
 // ─── Live Activity Feed — real-time log stream from all active bots ───────────
 function LiveActivityFeed({
   bots, botLogs,
-}: { bots: Bot[]; botLogs: Record<number, Log[]> }) {
+}: { bots: Bot[]; botLogs: Record<string, Log[]> }) {
   const feedRef   = useRef<HTMLDivElement>(null)
   const pinnedRef = useRef(true)
-  const prevTopId = useRef(0)
+  const prevTopId = useRef<string | number>(0)
 
-  const botMap = Object.fromEntries(bots.map(b => [b.id, b]))
+  const botMap = Object.fromEntries(bots.map(b => [String(b.id), b]))
 
   type EnrichedLog = Log & { botName: string; botCol: string }
   const allLogs: EnrichedLog[] = []
   for (const [bidStr, logs] of Object.entries(botLogs)) {
-    const bot = botMap[Number(bidStr)]
+    const bot = botMap[bidStr]
     if (!bot) continue
     for (const log of logs) {
       allLogs.push({ ...log, botName: bot.name, botCol: botColor(bot.id) })
     }
   }
-  allLogs.sort((a, b) => b.id - a.id)
+  allLogs.sort((a, b) => {
+    const ta = new Date(a.created_at).getTime()
+    const tb = new Date(b.created_at).getTime()
+    return tb - ta
+  })
   const visible = allLogs.filter(l => !l.message.trimStart().startsWith('{')).slice(0, 200)
 
   useEffect(() => {
@@ -491,7 +500,7 @@ function detectBotFeatures(logs: Log[]): string[] {
   return tags.slice(0, 3)
 }
 
-function BotStatsPanel({ bots, botLogs }: { bots: Bot[]; botLogs: Record<number, Log[]> }) {
+function BotStatsPanel({ bots, botLogs }: { bots: Bot[]; botLogs: Record<string, Log[]> }) {
   const [sys, setSys] = useState<ExtSysStats | null>(null)
   const loadSys = useCallback(async () => {
     try { const r = await systemApi.stats(); setSys(r.data) } catch { /**/ }
@@ -503,7 +512,7 @@ function BotStatsPanel({ bots, botLogs }: { bots: Bot[]; botLogs: Record<number,
     .sort((a, b) => (a.status === 'RUNNING' ? -1 : 1) - (b.status === 'RUNNING' ? -1 : 1))
 
   const botMetrics = activeBots.map(bot => {
-    const logs    = botLogs[bot.id] ?? []
+    const logs    = botLogs[String(bot.id)] ?? []
     const lastLog = logs[0]
     const recent  = logs.slice(0, 30)
     const errorCount = recent.filter(l => l.level === 'ERROR' || /\[ERROR\]/i.test(l.message)).length
@@ -727,75 +736,111 @@ function LiveStatsPanel({ bots }: { bots: Bot[] }) {
 export default function DashboardPage() {
   const router = useRouter()
   const [tradeMode]          = useTradeMode()
+  const isRelayMode = typeof window !== 'undefined' && getTransportMode() === 'relay'
+
   const [stats,    setStats] = useState<Stats|null>(null)
   const [bots,     setBots]  = useState<Bot[]>([])
   const [apiCount, setApi]   = useState(0)
-  const [botLogs,  setBotLogs] = useState<Record<number,Log[]>>({})
+  const [botLogs,  setBotLogs] = useState<Record<string,Log[]>>({})
   const [netErr,   setNetErr]  = useState(false)
 
-  const sinceIdsRef   = useRef<Record<number,number>>({})
+  const sinceIdsRef   = useRef<Record<string,number>>({})
   const activeBotsRef = useRef<Bot[]>([])
 
   const load = useCallback(async () => {
     try {
-      const [s,b,c] = await Promise.all([dashboardApi.stats(), botsApi.getAll(), connectionsApi.getAll()])
-      setNetErr(false)
-      setStats(s.data); setBots(b.data); setApi(c.data.length)
-      const active = (b.data as Bot[]).filter(bot => bot.status==='RUNNING'||bot.status==='ERROR')
-      activeBotsRef.current = active
-      const activeIds = new Set(active.map(b => b.id))
-      for (const id of Object.keys(sinceIdsRef.current).map(Number)) {
-        if (!activeIds.has(id)) delete sinceIdsRef.current[id]
+      if (isRelayMode) {
+        const [s, b, c] = await Promise.all([
+          sbDashboardApi.stats(),
+          sbBotsApi.getAll(),
+          sbConnectionsApi.getAll(),
+        ])
+        setNetErr(false)
+        setStats(s as unknown as Stats)
+        setBots(b as unknown as Bot[])
+        setApi(c.length)
+        const active = (b as unknown as Bot[]).filter(bot => bot.status==='RUNNING'||bot.status==='ERROR')
+        activeBotsRef.current = active
+        if (active.length === 0) setBotLogs({})
+      } else {
+        const [s,b,c] = await Promise.all([dashboardApi.stats(), botsApi.getAll(), connectionsApi.getAll()])
+        setNetErr(false)
+        setStats(s.data); setBots(b.data); setApi(c.data.length)
+        const active = (b.data as Bot[]).filter(bot => bot.status==='RUNNING'||bot.status==='ERROR')
+        activeBotsRef.current = active
+        const activeIds = new Set(active.map(b => String(b.id)))
+        for (const id of Object.keys(sinceIdsRef.current)) {
+          if (!activeIds.has(String(id))) delete sinceIdsRef.current[id]
+        }
+        if (active.length === 0) setBotLogs({})
       }
-      if (active.length === 0) setBotLogs({})
     } catch { setNetErr(true) }
-  }, [])
+  }, [isRelayMode])
 
   const pollLogs = useCallback(async () => {
+    // In relay mode, logs come from Supabase bot_logs_tail (written by the desktop);
+    // we skip the FastAPI since_id polling since those are integer-ID based.
+    if (isRelayMode) {
+      const active = activeBotsRef.current
+      if (active.length === 0) return
+      const res = await Promise.all(
+        active.map(bot =>
+          sbBotsApi.getLogs(String(bot.id), 50)
+            .then(logs => ({ id: String(bot.id), logs: logs as unknown as Log[] }))
+            .catch(() => ({ id: String(bot.id), logs: [] as Log[] }))
+        )
+      )
+      setBotLogs(prev => {
+        const next = { ...prev }
+        for (const { id, logs } of res) { next[id] = logs }
+        return next
+      })
+      return
+    }
     const active = activeBotsRef.current
     if (active.length === 0) return
-    const fresh    = active.filter(b => sinceIdsRef.current[b.id] === undefined)
-    const existing = active.filter(b => sinceIdsRef.current[b.id] !== undefined)
+    const fresh    = active.filter(b => sinceIdsRef.current[String(b.id)] === undefined)
+    const existing = active.filter(b => sinceIdsRef.current[String(b.id)] !== undefined)
     if (fresh.length > 0) {
       const res = await Promise.all(
         fresh.map(bot =>
-          botsApi.getLogs(bot.id, 50)
-            .then(r => ({ id: bot.id, logs: r.data as Log[] }))
-            .catch(() => ({ id: bot.id, logs: [] as Log[] }))
+          botsApi.getLogs(bot.id as number, 50)
+            .then(r => ({ id: String(bot.id), logs: r.data as Log[] }))
+            .catch(() => ({ id: String(bot.id), logs: [] as Log[] }))
         )
       )
       setBotLogs(prev => {
         const next = { ...prev }
         for (const { id, logs } of res) {
           next[id] = logs
-          sinceIdsRef.current[id] = logs.length > 0 ? Math.max(...logs.map((l: Log) => l.id)) : 0
+          sinceIdsRef.current[id] = logs.length > 0 ? Math.max(...logs.map((l: Log) => Number(l.id))) : 0
         }
         return next
       })
     }
     if (existing.length > 0) {
-      const toFetch = existing.filter(b => sinceIdsRef.current[b.id] >= 0)
+      const toFetch = existing.filter(b => sinceIdsRef.current[String(b.id)] >= 0)
       if (!toFetch.length) return
       const res = await Promise.all(
         toFetch.map(bot =>
-          botsApi.getLogs(bot.id, 100, sinceIdsRef.current[bot.id])
-            .then(r => ({ id: bot.id, logs: r.data as Log[] }))
-            .catch(() => ({ id: bot.id, logs: [] as Log[] }))
+          botsApi.getLogs(bot.id as number, 100, sinceIdsRef.current[String(bot.id)])
+            .then(r => ({ id: String(bot.id), logs: r.data as Log[] }))
+            .catch(() => ({ id: String(bot.id), logs: [] as Log[] }))
         )
       )
       setBotLogs(prev => {
         const next = { ...prev }
         for (const { id, logs } of res) {
           if (!logs.length) continue
-          sinceIdsRef.current[id] = logs[logs.length-1].id
+          sinceIdsRef.current[id] = Number(logs[logs.length-1].id)
           const merged = [...logs, ...(prev[id]??[])]
-          merged.sort((a:Log, b:Log) => b.id - a.id)
+          merged.sort((a:Log, b:Log) => Number(b.id) - Number(a.id))
           next[id] = merged.slice(0, 100)
         }
         return next
       })
     }
-  }, [])
+  }, [isRelayMode])
 
   const resetAndLoad = useCallback(() => {
     sinceIdsRef.current   = {}

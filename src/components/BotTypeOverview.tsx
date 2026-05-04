@@ -3,13 +3,13 @@ import React from 'react'
 import { timeAgo } from '@/lib/time'
 
 interface BotData {
-  id: number; name: string; status: string
+  id: string | number; name: string; status: string
   run_count: number; last_run_at: string | null
 }
-interface LogEntry  { id: number; level: string; message: string; created_at: string }
-interface ConnEntry { id: number; name: string }
+interface LogEntry  { id: string | number; level: string; message: string; created_at: string }
+interface ConnEntry { id: string | number; name: string }
 interface TradeEntry {
-  id: number; symbol: string; side: string
+  id: string | number; symbol: string; side: string
   entry_price: number | null; exit_price: number | null; pnl: number | null
   created_at: string
 }

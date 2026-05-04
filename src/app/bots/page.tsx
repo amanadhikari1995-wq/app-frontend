@@ -2,6 +2,8 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { botsApi, tradesApi, connectionsApi, trainerApi, analyzeApi, type AnalyzeResponse } from '@/lib/api'
+import { sbBotsApi, sbConnectionsApi, sbTradesApi } from '@/lib/supabase-data'
+import { getTransportMode } from '@/lib/runtime-config'
 import { formatTimeCT, formatTradeDateCT, timeAgo } from '@/lib/time'
 import Navbar from '@/components/Navbar'
 import AiFixModal from '@/components/AiFixModal'
@@ -17,16 +19,16 @@ const CARD  = { background: 'var(--card)', backdropFilter: 'blur(40px) saturate(
 const MODAL = { background: 'rgba(4,6,18,0.96)', border: '1px solid var(--border-bright, rgba(255,255,255,0.12))', backdropFilter: 'blur(48px) saturate(200%)', WebkitBackdropFilter: 'blur(48px) saturate(200%)', boxShadow: 'var(--shadow-elevated)' } as React.CSSProperties
 
 interface Bot   {
-  id: number; name: string; description: string | null; status: string
+  id: string | number; name: string; description: string | null; status: string
   run_count: number; last_run_at: string | null; code: string; bot_secret: string
   // settings
   schedule_type: string; schedule_start: string | null; schedule_end: string | null
   max_amount_per_trade: number | null; max_contracts_per_trade: number | null; max_daily_loss: number | null
   auto_restart: boolean
 }
-interface Log   { id: number; level: string; message: string; created_at: string }
-interface Conn  { id: number; name: string; base_url: string | null; api_key: string | null }
-interface Trade { id: number; symbol: string; side: string; entry_price: number | null; exit_price: number | null; quantity: number | null; pnl: number | null; note: string | null; created_at: string }
+interface Log   { id: string | number; level: string; message: string; created_at: string }
+interface Conn  { id: string | number; name: string; base_url: string | null; api_key: string | null }
+interface Trade { id: string | number; symbol: string; side: string; entry_price: number | null; exit_price: number | null; quantity: number | null; pnl: number | null; note: string | null; created_at: string }
 interface Stats { total_trades: number; winning_trades: number; losing_trades: number; win_rate: number; total_pnl: number; total_winning: number; total_losing: number }
 
 const STATUS: Record<string, { label: string; color: string; bg: string; glow: string; pulse: boolean }> = {
@@ -561,7 +563,7 @@ function addLockedBotId(id: number) {
 function getBotTypes(): Record<string, string> {
   try { return JSON.parse(localStorage.getItem('watchdog-bot-types') || '{}') } catch { return {} }
 }
-function saveBotType(id: number, type: string) {
+function saveBotType(id: string | number, type: string) {
   try {
     const m = getBotTypes(); m[String(id)] = type
     localStorage.setItem('watchdog-bot-types', JSON.stringify(m))
@@ -586,6 +588,8 @@ type PanelTab    = 'overview' | 'trades' | 'logs' | 'settings'
 export default function BotsPage() {
   const router = useRouter()
   const fileRef = useRef<HTMLInputElement>(null)
+  // In relay/web mode all bot CRUD goes to Supabase; run/stop requires desktop.
+  const isRelayMode = typeof window !== 'undefined' && getTransportMode() === 'relay'
 
   // Bot list
   const [bots,    setBots]    = useState<Bot[]>([])
@@ -670,8 +674,13 @@ export default function BotsPage() {
   // ── Load bots (polls every 3 s; also syncs open panel's bot reference) ──────
   const loadBots = useCallback(async () => {
     try {
-      const r = await botsApi.getAll()
-      const fresh: Bot[] = r.data
+      let fresh: Bot[]
+      if (isRelayMode) {
+        fresh = await sbBotsApi.getAll() as unknown as Bot[]
+      } else {
+        const r = await botsApi.getAll()
+        fresh = r.data
+      }
       setBots(fresh)
       setNetErr(false)
       // Keep the open panel's bot object in sync (status, run_count, etc.)
@@ -684,7 +693,7 @@ export default function BotsPage() {
       setNetErr(true)
     }
     setLoading(false)
-  }, [])
+  }, [isRelayMode])
 
   useEffect(() => {
     loadBots()
@@ -697,24 +706,37 @@ export default function BotsPage() {
   const loadPanel = useCallback(async (bot: Bot) => {
     setPanelLoading(true)
     try {
-      const [l, c, t, s] = await Promise.all([
-        botsApi.getLogs(bot.id, 200),
-        connectionsApi.getByBot(bot.id),
-        tradesApi.getByBot(bot.id),
-        tradesApi.getStats(bot.id),
-      ])
-      setPanelLogs(l.data)
-      setPanelConns(c.data)
-      setTrades(t.data)
-      setTradeStats(s.data)
+      if (isRelayMode) {
+        const [l, c, t, s] = await Promise.all([
+          sbBotsApi.getLogs(String(bot.id), 200),
+          sbConnectionsApi.getByBot(String(bot.id)),
+          sbTradesApi.getByBot(String(bot.id)),
+          sbTradesApi.getStats(String(bot.id)),
+        ])
+        setPanelLogs(l as unknown as Log[])
+        setPanelConns(c as unknown as Conn[])
+        setTrades(t as unknown as Trade[])
+        setTradeStats(s)
+      } else {
+        const [l, c, t, s] = await Promise.all([
+          botsApi.getLogs(bot.id as number, 200),
+          connectionsApi.getByBot(bot.id as number),
+          tradesApi.getByBot(bot.id as number),
+          tradesApi.getStats(bot.id as number),
+        ])
+        setPanelLogs(l.data)
+        setPanelConns(c.data)
+        setTrades(t.data)
+        setTradeStats(s.data)
+      }
     } catch {}
     setPanelLoading(false)
-  }, [])
+  }, [isRelayMode])
 
   // ── Live log streaming while a panel is open ──────────────────────────────
   // Uses since_id so each poll only fetches NEW lines (zero flicker, instant).
   // Interval: 1.5 s when RUNNING, 4 s otherwise.
-  const panelIdRef   = useRef<number | null>(null)
+  const panelIdRef   = useRef<string | number | null>(null)
   const sinceIdRef   = useRef<number>(0)
 
   useEffect(() => {
@@ -731,19 +753,23 @@ export default function BotsPage() {
     const pollLogs = async () => {
       if (cancelled || panelIdRef.current !== panel.id) return
       try {
-        if (sinceIdRef.current === 0) {
+        if (isRelayMode) {
+          // Supabase mode: static fetch from bot_logs_tail (desktop writes here when running)
+          const logs = await sbBotsApi.getLogs(String(panel.id), 200)
+          if (!cancelled) setPanelLogs(logs as unknown as Log[])
+        } else if (sinceIdRef.current === 0) {
           // First load: fetch latest 200 (desc) so we have history
-          const r = await botsApi.getLogs(panel.id, 200, 0)
+          const r = await botsApi.getLogs(panel.id as number, 200, 0)
           if (!cancelled && r.data.length > 0) {
             setPanelLogs(r.data)
-            sinceIdRef.current = Math.max(...(r.data as Log[]).map((l: Log) => l.id))
+            sinceIdRef.current = Math.max(...(r.data as Log[]).map((l: Log) => Number(l.id)))
           }
         } else {
           // Incremental fetch: only new lines since last poll (asc order)
-          const r = await botsApi.getLogs(panel.id, 500, sinceIdRef.current)
+          const r = await botsApi.getLogs(panel.id as number, 500, sinceIdRef.current)
           if (!cancelled && r.data.length > 0) {
             const newLines: Log[] = r.data
-            sinceIdRef.current = Math.max(...newLines.map((l: Log) => l.id))
+            sinceIdRef.current = Math.max(...newLines.map((l: Log) => Number(l.id)))
             // Prepend to existing (panel displays desc)
             setPanelLogs(prev => [...newLines, ...prev].slice(0, 500))
           }
@@ -773,12 +799,12 @@ export default function BotsPage() {
     if (prevPanelStatus.current !== panelStatus) {
       prevPanelStatus.current = panelStatus
       // Force log re-poll immediately on status change (e.g. RUNNING → IDLE)
-      if (panelStatus) {
-        botsApi.getLogs(panel.id, 500, sinceIdRef.current)
+      if (panelStatus && !isRelayMode) {
+        botsApi.getLogs(panel.id as number, 500, sinceIdRef.current)
           .then(r => {
             if (r.data.length > 0) {
               const newLines: Log[] = r.data
-              sinceIdRef.current = Math.max(...newLines.map((l: Log) => l.id))
+              sinceIdRef.current = Math.max(...newLines.map((l: Log) => Number(l.id)))
               setPanelLogs(prev => [...newLines, ...prev].slice(0, 500))
             }
           }).catch(() => {})
@@ -787,9 +813,17 @@ export default function BotsPage() {
   }, [panelStatus, panel])
 
   // ── API connections step helpers ──────────────────────────────────────────
-  const loadApiConns = useCallback(async (botId: number) => {
-    try { const r = await connectionsApi.getByBot(botId); setApiConns(r.data) } catch {}
-  }, [])
+  const loadApiConns = useCallback(async (botId: string | number) => {
+    try {
+      if (isRelayMode) {
+        const rows = await sbConnectionsApi.getByBot(String(botId))
+        setApiConns(rows as unknown as Conn[])
+      } else {
+        const r = await connectionsApi.getByBot(botId as number)
+        setApiConns(r.data)
+      }
+    } catch {}
+  }, [isRelayMode])
 
   const selectApiBot = (bot: Bot) => {
     setApiBot(bot)
@@ -807,13 +841,23 @@ export default function BotsPage() {
     if (!apiBot || !apiName.trim()) return
     setApiSaving(true); setApiSaveOk(false); setApiSaveErr('')
     try {
-      await connectionsApi.create({
-        bot_id: apiBot.id,
-        name: apiName.trim(),
-        base_url: apiBaseUrl.trim() || undefined,
-        api_key: apiKey.trim() || undefined,
-        api_secret: apiSecret.trim() || undefined,
-      })
+      if (isRelayMode) {
+        await sbConnectionsApi.create({
+          bot_id: String(apiBot.id),
+          name: apiName.trim(),
+          base_url: apiBaseUrl.trim() || undefined,
+          api_key: apiKey.trim() || undefined,
+          api_secret: apiSecret.trim() || undefined,
+        })
+      } else {
+        await connectionsApi.create({
+          bot_id: apiBot.id as number,
+          name: apiName.trim(),
+          base_url: apiBaseUrl.trim() || undefined,
+          api_key: apiKey.trim() || undefined,
+          api_secret: apiSecret.trim() || undefined,
+        })
+      }
       setApiSaveOk(true)
       loadApiConns(apiBot.id)
       setTimeout(() => setApiSaveOk(false), 3000)
@@ -841,9 +885,16 @@ export default function BotsPage() {
     setApiSaving(false)
   }
 
-  const removeApiConn = async (id: number) => {
+  const removeApiConn = async (id: string | number) => {
     if (!apiBot || !confirm('Remove this API key?')) return
-    try { await connectionsApi.delete(id); loadApiConns(apiBot.id) } catch {}
+    try {
+      if (isRelayMode) {
+        await sbConnectionsApi.delete(String(id))
+      } else {
+        await connectionsApi.delete(id as number)
+      }
+      loadApiConns(apiBot.id)
+    } catch {}
   }
 
   const seedSettings = (bot: Bot) => {
@@ -869,15 +920,27 @@ export default function BotsPage() {
     seedSettings(bot)
     // Load connections, trades, stats (logs are handled by the live-stream effect)
     setPanelLoading(true)
-    Promise.all([
-      connectionsApi.getByBot(bot.id),
-      tradesApi.getByBot(bot.id),
-      tradesApi.getStats(bot.id),
-    ]).then(([c, t, s]) => {
-      setPanelConns(c.data)
-      setTrades(t.data)
-      setTradeStats(s.data)
-    }).catch(() => {}).finally(() => setPanelLoading(false))
+    if (isRelayMode) {
+      Promise.all([
+        sbConnectionsApi.getByBot(String(bot.id)),
+        sbTradesApi.getByBot(String(bot.id)),
+        sbTradesApi.getStats(String(bot.id)),
+      ]).then(([c, t, s]) => {
+        setPanelConns(c as unknown as Conn[])
+        setTrades(t as unknown as Trade[])
+        setTradeStats(s)
+      }).catch(() => {}).finally(() => setPanelLoading(false))
+    } else {
+      Promise.all([
+        connectionsApi.getByBot(bot.id as number),
+        tradesApi.getByBot(bot.id as number),
+        tradesApi.getStats(bot.id as number),
+      ]).then(([c, t, s]) => {
+        setPanelConns(c.data)
+        setTrades(t.data)
+        setTradeStats(s.data)
+      }).catch(() => {}).finally(() => setPanelLoading(false))
+    }
   }
 
   const closePanel = () => {
@@ -901,22 +964,37 @@ export default function BotsPage() {
     setSSaving(true); setSSaveErr('')
     const updatedCode = applyParams(panel.code, panelCodeParams)
     try {
-      await botsApi.update(panel.id, {
-        name: sName.trim() || panel.name,
-        description: sDesc.trim() || undefined,
-        code: updatedCode,
-        schedule_type: sSchedule,
-        schedule_start: sSchedule === 'custom' ? sStart : undefined,
-        schedule_end:   sSchedule === 'custom' ? sEnd   : undefined,
-        max_amount_per_trade:    sMaxAmount    ? parseFloat(sMaxAmount)    : undefined,
-        max_contracts_per_trade: sMaxContracts ? parseInt(sMaxContracts)   : undefined,
-        max_daily_loss:          sMaxLoss      ? parseFloat(sMaxLoss)      : undefined,
-        auto_restart: sAutoRestart,
-      })
+      if (isRelayMode) {
+        await sbBotsApi.update(String(panel.id), {
+          name: sName.trim() || panel.name,
+          description: sDesc.trim() || undefined,
+          code: updatedCode,
+          schedule_type: sSchedule,
+          schedule_start: sSchedule === 'custom' ? sStart : null,
+          schedule_end:   sSchedule === 'custom' ? sEnd   : null,
+          max_amount_per_trade:    sMaxAmount    ? parseFloat(sMaxAmount)    : null,
+          max_contracts_per_trade: sMaxContracts ? parseInt(sMaxContracts)   : null,
+          max_daily_loss:          sMaxLoss      ? parseFloat(sMaxLoss)      : null,
+          auto_restart: sAutoRestart,
+        })
+      } else {
+        await botsApi.update(panel.id as number, {
+          name: sName.trim() || panel.name,
+          description: sDesc.trim() || undefined,
+          code: updatedCode,
+          schedule_type: sSchedule,
+          schedule_start: sSchedule === 'custom' ? sStart : undefined,
+          schedule_end:   sSchedule === 'custom' ? sEnd   : undefined,
+          max_amount_per_trade:    sMaxAmount    ? parseFloat(sMaxAmount)    : undefined,
+          max_contracts_per_trade: sMaxContracts ? parseInt(sMaxContracts)   : undefined,
+          max_daily_loss:          sMaxLoss      ? parseFloat(sMaxLoss)      : undefined,
+          auto_restart: sAutoRestart,
+        })
+      }
       setSSaved(true)
       setTimeout(() => setSSaved(false), 3000)
       loadBots()
-    } catch { setSSaveErr('Save failed — check that the backend is running.') }
+    } catch { setSSaveErr('Save failed — check your connection and try again.') }
     setSSaving(false)
   }
 
@@ -929,22 +1007,32 @@ export default function BotsPage() {
   }, [bots]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Bot actions ────────────────────────────────────────────────────────────
-  const runBot  = async (id: number, e: React.MouseEvent) => {
+  const runBot  = async (id: string | number, e: React.MouseEvent) => {
     e.stopPropagation(); setBotActionErr('')
-    try { await botsApi.run(id);  loadBots() }
+    if (isRelayMode) { setBotActionErr('Running bots requires the WatchDog desktop app. Visit watchdogbot.cloud to download.'); return }
+    try { await botsApi.run(id as number);  loadBots() }
     catch { setBotActionErr('Failed to start bot — check that the backend is running.') }
   }
-  const stopBot = async (id: number, e: React.MouseEvent) => {
+  const stopBot = async (id: string | number, e: React.MouseEvent) => {
     e.stopPropagation(); setBotActionErr('')
-    try { await botsApi.stop(id); loadBots() }
+    if (isRelayMode) { setBotActionErr('Stopping bots requires the WatchDog desktop app.'); return }
+    try { await botsApi.stop(id as number); loadBots() }
     catch { setBotActionErr('Failed to stop bot.') }
   }
-  const delBot  = async (id: number, e: React.MouseEvent) => {
+  const delBot  = async (id: string | number, e: React.MouseEvent) => {
     e.stopPropagation()
     if (!confirm('Delete this bot? This cannot be undone.')) return
     setBotActionErr('')
-    try { await botsApi.delete(id); if (panel?.id === id) closePanel(); loadBots() }
-    catch { setBotActionErr('Failed to delete bot — check that the backend is running.') }
+    try {
+      if (isRelayMode) {
+        await sbBotsApi.delete(String(id))
+      } else {
+        await botsApi.delete(id as number)
+      }
+      if (panel?.id === id) closePanel()
+      loadBots()
+    }
+    catch { setBotActionErr('Failed to delete bot.') }
   }
 
   // ── Create modal ───────────────────────────────────────────────────────────
@@ -1035,15 +1123,26 @@ export default function BotsPage() {
       : detectAllApis(mCode)
 
     try {
-      const res = await botsApi.create({ name: mName.trim(), description: mDesc || undefined, code: mCode })
-      if (mCodeLocked && res?.data?.id) addLockedBotId(res.data.id)
-      if (res?.data?.id && selectedBotType) {
-        saveBotType(res.data.id, selectedBotType)
-        setBotTypeMap(getBotTypes())
+      let newBotData: Bot
+      if (isRelayMode) {
+        const sbBot = await sbBotsApi.create({ name: mName.trim(), description: mDesc || undefined, code: mCode })
+        newBotData = sbBot as unknown as Bot
+      } else {
+        const res = await botsApi.create({ name: mName.trim(), description: mDesc || undefined, code: mCode })
+        newBotData = res.data as Bot
+        if (mCodeLocked && res?.data?.id) addLockedBotId(res.data.id)
+        if (res?.data?.id && selectedBotType) {
+          saveBotType(res.data.id, selectedBotType)
+          setBotTypeMap(getBotTypes())
+        }
+        // Auto-create training_data folder structure for this bot (desktop only)
+        if (res?.data?.id) {
+          try { await trainerApi.initBot(res.data.id, mName.trim()) } catch { /* non-critical */ }
+        }
       }
-      // Auto-create training_data folder structure for this bot
-      if (res?.data?.id) {
-        try { await trainerApi.initBot(res.data.id, mName.trim()) } catch { /* non-critical */ }
+      if (isRelayMode && newBotData?.id && selectedBotType) {
+        saveBotType(String(newBotData.id), selectedBotType)
+        setBotTypeMap(getBotTypes())
       }
       setSaveOk(true)
       await loadBots()
@@ -1051,8 +1150,8 @@ export default function BotsPage() {
       // Pre-fill the form with the FIRST detected API so the user sees that the
       // scan worked. Remaining detected APIs go into the queue and are picked up
       // automatically as the user saves each one (see saveApi for the advance).
-      if (res?.data) {
-        const newBot = res.data as Bot
+      if (newBotData) {
+        const newBot = newBotData
         const [first, ...rest] = detected
         setDetectedApiQueue(rest)
         setTimeout(() => {
@@ -1082,20 +1181,30 @@ export default function BotsPage() {
     if (!apiBot || !apiName.trim()) return
     setApiSaving(true); setApiSaveErr('')
     try {
-      await connectionsApi.create({
-        bot_id: apiBot.id,
-        name: apiName.trim(),
-        base_url: apiBaseUrl.trim() || undefined,
-        api_key: apiKey.trim() || undefined,
-        api_secret: apiSecret.trim() || undefined,
-      })
+      if (isRelayMode) {
+        await sbConnectionsApi.create({
+          bot_id: String(apiBot.id),
+          name: apiName.trim(),
+          base_url: apiBaseUrl.trim() || undefined,
+          api_key: apiKey.trim() || undefined,
+          api_secret: apiSecret.trim() || undefined,
+        })
+      } else {
+        await connectionsApi.create({
+          bot_id: apiBot.id as number,
+          name: apiName.trim(),
+          base_url: apiBaseUrl.trim() || undefined,
+          api_key: apiKey.trim() || undefined,
+          api_secret: apiSecret.trim() || undefined,
+        })
+      }
       await loadApiConns(apiBot.id)
       // Clear form for next entry
       setApiName(''); setApiBaseUrl(''); setApiKey(''); setApiSecret('')
       setApiSaveErr('')
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-      setApiSaveErr(msg || 'Failed to save. Make sure the backend is running.')
+      setApiSaveErr(msg || 'Failed to save.')
     }
     setApiSaving(false)
   }
@@ -1105,16 +1214,26 @@ export default function BotsPage() {
     if (apiBot && apiName.trim()) {
       setApiSaving(true); setApiSaveErr('')
       try {
-        await connectionsApi.create({
-          bot_id: apiBot.id,
-          name: apiName.trim(),
-          base_url: apiBaseUrl.trim() || undefined,
-          api_key: apiKey.trim() || undefined,
-          api_secret: apiSecret.trim() || undefined,
-        })
+        if (isRelayMode) {
+          await sbConnectionsApi.create({
+            bot_id: String(apiBot.id),
+            name: apiName.trim(),
+            base_url: apiBaseUrl.trim() || undefined,
+            api_key: apiKey.trim() || undefined,
+            api_secret: apiSecret.trim() || undefined,
+          })
+        } else {
+          await connectionsApi.create({
+            bot_id: apiBot.id as number,
+            name: apiName.trim(),
+            base_url: apiBaseUrl.trim() || undefined,
+            api_key: apiKey.trim() || undefined,
+            api_secret: apiSecret.trim() || undefined,
+          })
+        }
       } catch (err: unknown) {
         const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-        setApiSaveErr(msg || 'Failed to save. Make sure the backend is running.')
+        setApiSaveErr(msg || 'Failed to save.')
         setApiSaving(false)
         return
       }

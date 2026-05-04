@@ -17,7 +17,7 @@ interface AiFixResult {
 }
 
 interface Props {
-  botId: number
+  botId: string | number
   botCode: string
   errorLogs: string[]          // pre-filtered ERROR/WARNING lines
   onApply: (fixedCode: string) => void
@@ -149,7 +149,7 @@ export default function AiFixModal({ botId, botCode, errorLogs, onApply, onClose
     if (!result) return
     setApplying(true)
     try {
-      await botsApi.update(botId, { code: result.fixed_code })
+      await botsApi.update(botId as number, { code: result.fixed_code })
       setApplied(true)
       setTimeout(() => {
         onApply(result.fixed_code)
