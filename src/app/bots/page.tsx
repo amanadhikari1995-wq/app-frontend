@@ -1,4 +1,4 @@
-﻿'use client'
+'use client'
 import { useEffect, useState, useRef, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { botsApi, tradesApi, connectionsApi, trainerApi, analyzeApi, type AnalyzeResponse } from '@/lib/api'
@@ -11,6 +11,7 @@ import {
 import { detectRequiredApis, detectAllApis, unconfiguredApis, type DetectedApi } from '@/lib/api-detector'
 import { useOnlineStatus } from '@/hooks/useOnlineStatus'
 import BotTypeOverview from '@/components/BotTypeOverview'
+import { subscribeBotsRealtime, subscribeConnectionsRealtime, getSupabaseUserId } from '@/lib/supabase-data'
 
 const BG = 'var(--bg)'
 const CARD  = { background: 'var(--card)', backdropFilter: 'blur(40px) saturate(180%)', WebkitBackdropFilter: 'blur(40px) saturate(180%)', boxShadow: 'var(--shadow-card)' } as React.CSSProperties
@@ -19,6 +20,7 @@ const MODAL = { background: 'rgba(4,6,18,0.96)', border: '1px solid var(--border
 interface Bot   {
   id: number; name: string; description: string | null; status: string
   run_count: number; last_run_at: string | null; code: string; bot_secret: string
+  cloud_id?: string | null  // Supabase UUID — used for Realtime event matching
   // settings
   schedule_type: string; schedule_start: string | null; schedule_end: string | null
   max_amount_per_trade: number | null; max_contracts_per_trade: number | null; max_daily_loss: number | null
@@ -688,10 +690,59 @@ export default function BotsPage() {
 
   useEffect(() => {
     loadBots()
-    const t = setInterval(loadBots, 3000)
+    const t = setInterval(loadBots, 30000)  // Realtime handles instant updates; poll as fallback
     return () => clearInterval(t)
   }, [router, loadBots])
   useOnlineStatus(loadBots)  // immediate reload on reconnect
+
+  // ── Supabase Realtime — zero-lag sync for bots + connections ──────────────
+  useEffect(() => {
+    let unsub: (() => void) | null = null
+    getSupabaseUserId().then(userId => {
+      if (!userId) return
+      unsub = subscribeBotsRealtime(userId, (event, row) => {
+        setBots(prev => {
+          if (event === 'INSERT') {
+            // avoid duplicates (sync_engine may have already pulled it)
+            if (prev.some(b => b.cloud_id === row.id)) return prev
+            const newBot: Bot = {
+              id: 0, // placeholder — loadBots will reconcile with the local integer id
+              name: row.name, description: row.description, status: row.status,
+              run_count: row.run_count, last_run_at: row.last_run_at, code: row.code,
+              bot_secret: '', cloud_id: row.id,
+              schedule_type: row.schedule_type, schedule_start: row.schedule_start,
+              schedule_end: row.schedule_end,
+              max_amount_per_trade: row.max_amount_per_trade,
+              max_contracts_per_trade: row.max_contracts_per_trade,
+              max_daily_loss: row.max_daily_loss,
+              auto_restart: row.auto_restart,
+            }
+            // Trigger a fetch to get the local integer ID
+            setTimeout(loadBots, 500)
+            return prev
+          }
+          if (event === 'UPDATE') {
+            const updated = prev.map(b =>
+              b.cloud_id === row.id
+                ? { ...b, status: row.status, is_running: row.is_running,
+                    run_count: row.run_count, last_run_at: row.last_run_at,
+                    name: row.name, description: row.description,
+                    schedule_type: row.schedule_type, auto_restart: row.auto_restart }
+                : b
+            )
+            // Sync panel reference too
+            setPanel(p => p?.cloud_id === row.id ? { ...p, status: row.status, run_count: row.run_count, last_run_at: row.last_run_at } : p)
+            return updated
+          }
+          if (event === 'DELETE') {
+            return prev.filter(b => b.cloud_id !== row.id)
+          }
+          return prev
+        })
+      })
+    })
+    return () => { unsub?.() }
+  }, [loadBots])
 
   // ── Load panel data when a bot is selected ─────────────────────────────────
   const loadPanel = useCallback(async (bot: Bot) => {
