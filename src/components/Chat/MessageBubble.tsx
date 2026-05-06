@@ -109,7 +109,7 @@ export default function MessageBubble({ message, mine, grouped, isAdmin, onEdit,
               onClick={() => { if (!mine) onOpenDM(message.user_id) }}
             >{name}</span>
             <span style={{ fontSize: 11, color: 'rgba(170,181,199,0.45)' }}>{timeLabel(message.created_at)}</span>
-            {message.is_edited && <span style={{ fontSize: 10, color: 'rgba(170,181,199,0.35)', fontStyle: 'italic' }}>(edited)</span>}
+            {(message.updated_at && message.updated_at !== message.created_at) && <span style={{ fontSize: 10, color: 'rgba(170,181,199,0.35)', fontStyle: 'italic' }}>(edited)</span>}
           </div>
         )}
 
