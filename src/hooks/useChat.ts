@@ -182,9 +182,10 @@ export function useChat() {
 
   // Stale typing pruner
   useEffect(() => {
+    if (Object.keys(typing).length === 0) return
     const t = setInterval(() => setTyping((cur) => { const now = Date.now(); const next: Record<string, number> = {}; for (const [k, v] of Object.entries(cur)) if (now - v < 4000) next[k] = v; return next }), 1500)
     return () => clearInterval(t)
-  }, [])
+  }, [typing])
 
   // Per-channel messages + reactions subscription
   useEffect(() => {
