@@ -819,7 +819,7 @@ export default function DashboardPage() {
     }
     safeLoad()
     const statusTimer = setInterval(safeLoad, 4000)
-    const logTimer    = setInterval(safePoll, 1500)
+    const logTimer    = setInterval(safePoll, 4000)  // perf: was 1500ms — too aggressive for N+1 fetches
     return () => { alive = false; clearInterval(statusTimer); clearInterval(logTimer) }
   }, [load, pollLogs])
 
