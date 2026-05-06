@@ -39,6 +39,7 @@ type EventListener        = (data: unknown) => void
 const REQUEST_TIMEOUT_MS    = 25_000
 const RECONNECT_BASE_MS     = 1_000
 const RECONNECT_MAX_MS      = 30_000
+const HEARTBEAT_INTERVAL_MS = 20_000  // keepalive — prevents proxy idle-timeout disconnects
 
 class RelayClient {
   private ws: WebSocket | null = null
@@ -46,6 +47,7 @@ class RelayClient {
   private shouldRun = false
   private reconnectDelay = RECONNECT_BASE_MS
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  private _heartbeatTimer: ReturnType<typeof setInterval> | null = null
 
   private pending = new Map<string, Pending>()
   private subs    = new Map<string, Set<EventListener>>()
@@ -73,6 +75,7 @@ class RelayClient {
     this.shouldRun = false
     this.connecting = false  // reset so the next connect() after a new login isn't blocked
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null }
+    if (this._heartbeatTimer) { clearInterval(this._heartbeatTimer); this._heartbeatTimer = null }
     if (this.ws) {
       try { this.ws.close() } catch { /* already closed */ }
       this.ws = null
@@ -202,6 +205,19 @@ class RelayClient {
       Array.from(this.subs.keys()).forEach((topic) => {
         ws.send(JSON.stringify({ type: 'subscribe', topic }))
       })
+      // ── Keepalive heartbeat ──────────────────────────────────────────────
+      // Railway's reverse proxy drops WebSocket connections after 10–30 min
+      // of no application data. Native ping/pong frames are protocol-level
+      // and do not satisfy proxy idle-timeout checks. Sending a small
+      // { type:"ping" } every 20 s keeps the path live through any proxy.
+      // The relay server responds with { type:"pong" } and does not
+      // forward the message to the desktop.
+      if (this._heartbeatTimer) clearInterval(this._heartbeatTimer)
+      this._heartbeatTimer = setInterval(() => {
+        if (this.ws?.readyState === WebSocket.OPEN) {
+          this.ws.send(JSON.stringify({ type: 'ping' }))
+        }
+      }, HEARTBEAT_INTERVAL_MS)
     })
 
     ws.addEventListener('message', (ev) => {
@@ -244,6 +260,7 @@ class RelayClient {
     })
 
     ws.addEventListener('close', () => {
+      if (this._heartbeatTimer) { clearInterval(this._heartbeatTimer); this._heartbeatTimer = null }
       this.connecting = false
       this.ws = null
       const wasOnline = this._desktopOnline
