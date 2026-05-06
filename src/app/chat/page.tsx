@@ -1,190 +1,196 @@
 'use client'
 
 /**
- * /chat — community room powered by Supabase Realtime.
- *
- * Same code runs in:
- *   • the Electron desktop app  (loads /chat from the static export)
- *   • the web dashboard at /app/chat
- *
- * Both connect directly to Supabase (no local FastAPI involved), so a
- * message sent from one platform appears on every other platform within
- * ~50 ms over the same realtime channel.
- *
- * Implementation lives in:
- *   src/lib/supabase.ts       — shared Supabase client (lazy init)
- *   src/hooks/useChat.ts      — subscribe/send/presence/typing
- *   src/components/Chat/*     — Message, MessageList, ChatInput, PresencePanel
+ * /chat — Discord-like community chat powered by Supabase Realtime.
+ * Layout: channels sidebar | message feed | members panel.
  */
-import React, { useMemo } from 'react'
+import React, { useState, useEffect } from 'react'
 import Navbar from '@/components/Navbar'
-import MessageList   from '@/components/Chat/MessageList'
-import ChatInput     from '@/components/Chat/ChatInput'
-import PresencePanel from '@/components/Chat/PresencePanel'
-import { useChat }   from '@/hooks/useChat'
-
-
-const ROOM_ID = 'global'
-
+import { useChat } from '@/hooks/useChat'
+import ProfileSetupModal from '@/components/Chat/ProfileSetupModal'
+import ChannelSidebar    from '@/components/Chat/ChannelSidebar'
+import MessageFeed       from '@/components/Chat/MessageFeed'
+import ChatInputBar      from '@/components/Chat/ChatInputBar'
+import MembersPanel      from '@/components/Chat/MembersPanel'
+import { ADMIN_EMAIL, createChannel, renameChannel, deleteChannel, banUser } from '@/lib/chatClient'
+import type { ChatMessage } from '@/hooks/useChat'
 
 export default function ChatPage() {
-  const { me, messages, presence, typing, status, send, sendTyping } = useChat(ROOM_ID, 100)
+  const {
+    me, myProfile, allProfiles,
+    channels, activeView, setActiveView,
+    messages, loadingMsgs, hasMore, loadMore,
+    send, sendFile, editMsg, deleteMsg, react,
+    presence, onlineIds, dmChannels, openDM,
+    typing, sendTyping, status,
+  } = useChat()
 
-  // Names of users currently typing (excluding ourselves)
-  const typingNames = useMemo(() => {
-    return Object.keys(typing)
-      .filter((uid) => uid !== me?.id)
-      .map((uid) => presence[uid]?.username || 'Someone')
-  }, [typing, presence, me])
+  const [showProfileSetup, setShowProfileSetup] = useState(false)
+  const [replyTo,           setReplyTo]          = useState<ChatMessage | null>(null)
+  const [mobileSidebar,     setMobileSidebar]    = useState(false)
 
-  const typingLine =
-    typingNames.length === 0 ? '' :
-    typingNames.length === 1 ? `${typingNames[0]} is typing…` :
-    typingNames.length === 2 ? `${typingNames[0]} and ${typingNames[1]} are typing…` :
-                               `${typingNames[0]} and ${typingNames.length - 1} others are typing…`
+  // Show profile setup for first-time users
+  useEffect(() => {
+    if (me && myProfile === null) {
+      const t = setTimeout(() => setShowProfileSetup(true), 1200)
+      return () => clearTimeout(t)
+    }
+  }, [me, myProfile])
+
+  const isAdmin = me?.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase()
+
+  const channelKey =
+    activeView?.kind === 'channel' ? activeView.channelId :
+    activeView?.kind === 'dm'      ? activeView.dmId      : null
+
+  const activeChannelName =
+    activeView?.kind === 'channel' ? channels.find((c) => c.id === activeView.channelId)?.name ?? '' :
+    activeView?.kind === 'dm'      ? allProfiles[activeView.otherUserId]?.username ?? 'DM'          : ''
+
+  const typingNames = channelKey
+    ? Object.entries(typing)
+        .filter(([k, v]) => k.startsWith(`${channelKey}:`) && Date.now() - v < 4000)
+        .map(([k]) => {
+          const uid = k.split(':')[1]
+          return presence[uid]?.username ?? allProfiles[uid]?.username ?? 'Someone'
+        })
+    : []
 
   return (
     <>
       <Navbar />
+      <main style={{ height: 'calc(100vh - 56px)', display: 'flex', flexDirection: 'column', overflow: 'hidden', background: '#0d1117' }}>
 
-      <main
-        style={{
-          height: '100vh',
-          display: 'flex', flexDirection: 'column',
-          // Chat takes a full-height pane; we can't rely on the
-          // global body padding because we need the message list to
-          // own the vertical scroll, not the page.
-          paddingRight: 0, paddingTop: 0, paddingBottom: 0,
-        }}
-      >
-        <header
-          style={{
-            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-            padding: '14px 24px',
-            borderBottom: '1px solid rgba(255, 255, 255, 0.06)',
-            background: 'rgba(255, 255, 255, 0.02)',
-            flexShrink: 0,
-          }}
-        >
-          <div>
-            <h1 style={{ fontSize: 22, fontWeight: 600, letterSpacing: '-0.01em', margin: 0 }}>
-              Community
-            </h1>
-            <div style={{ fontSize: 13, color: 'rgba(170, 181, 199, 0.7)', marginTop: 2 }}>
-              {connectionLabel(status)} · everyone in WatchDog can see this room
+        {showProfileSetup && me && (
+          <ProfileSetupModal
+            userId={me.id}
+            suggestedName={me.username}
+            onComplete={() => setShowProfileSetup(false)}
+          />
+        )}
+
+        <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+
+          {/* Left: channels */}
+          <ChannelSidebar
+            channels={channels}
+            dmChannels={dmChannels}
+            activeView={activeView}
+            onSelectView={setActiveView}
+            onOpenDM={openDM}
+            myId={me?.id ?? null}
+            isAdmin={isAdmin}
+            allProfiles={allProfiles}
+            onCreateChannel={async (name, desc) => { if (me) await createChannel(name, desc, me.id) }}
+            onRenameChannel={renameChannel}
+            onDeleteChannel={deleteChannel}
+            mobileOpen={mobileSidebar}
+            onMobileClose={() => setMobileSidebar(false)}
+          />
+
+          {/* Center: messages */}
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
+
+            {/* Header */}
+            <div style={{ height: 52, borderBottom: '1px solid rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', gap: 12, padding: '0 16px', background: '#0d1117', flexShrink: 0 }}>
+              <button
+                className="chat-mobile-menu"
+                onClick={() => setMobileSidebar(true)}
+                style={{ display: 'none', background: 'none', border: 'none', color: '#aab5c7', cursor: 'pointer', padding: 4 }}
+              >
+                <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
+                  <path d="M3 6h18M3 12h18M3 18h18" />
+                </svg>
+              </button>
+
+              {activeView?.kind === 'channel' && <span style={{ color: 'rgba(170,181,199,0.45)', fontSize: 20, fontWeight: 300 }}>#</span>}
+              {activeView?.kind === 'dm'      && <span style={{ fontSize: 18 }}>💬</span>}
+
+              <span style={{ fontWeight: 600, fontSize: 16, color: '#e2e8f0' }}>
+                {activeChannelName || 'Select a channel'}
+              </span>
+
+              <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 7, fontSize: 12, color: 'rgba(170,181,199,0.5)' }}>
+                <span style={{
+                  width: 7, height: 7, borderRadius: '50%', display: 'inline-block',
+                  background: status === 'subscribed' ? '#22c55e' : status === 'error' ? '#ef4444' : '#f59e0b',
+                }} />
+                {status === 'subscribed' ? 'Live' : status === 'connecting' ? 'Connecting…' : 'Disconnected'}
+              </div>
             </div>
-          </div>
 
-          <ConnectionDot status={status} />
-        </header>
-
-        <div style={{
-          flex: 1, minHeight: 0,
-          display: 'flex', flexDirection: 'row',
-        }}>
-          <section style={{
-            flex: 1, minWidth: 0,
-            display: 'flex', flexDirection: 'column',
-          }}>
-            <div style={{ flex: 1, minHeight: 0 }}>
-              <MessageList
+            {/* Feed */}
+            <div style={{ flex: 1, overflow: 'hidden' }}>
+              <MessageFeed
                 messages={messages}
                 myUserId={me?.id ?? null}
-                emptyHint={
-                  status === 'subscribed'
-                    ? <>No messages yet. Be the first to say hi 👋</>
-                    : <>Connecting to chat…</>
-                }
+                isAdmin={isAdmin}
+                allProfiles={allProfiles}
+                loading={loadingMsgs}
+                hasMore={hasMore}
+                onLoadMore={loadMore}
+                onEdit={editMsg}
+                onDelete={deleteMsg}
+                onReact={react}
+                onReply={setReplyTo}
+                onOpenDM={openDM}
+                emptyHint={!activeView ? <>Select a channel to start chatting</> : <>No messages yet — say hello! 👋</>}
               />
             </div>
 
-            {typingLine && (
-              <div style={{
-                fontSize: 12, color: 'rgba(170, 181, 199, 0.7)',
-                padding: '4px 16px', fontStyle: 'italic',
-                minHeight: 18,
-              }}>
-                {typingLine}
+            {/* Typing */}
+            {typingNames.length > 0 && (
+              <div style={{ padding: '2px 20px 3px', fontSize: 12, color: 'rgba(170,181,199,0.6)', fontStyle: 'italic', background: '#0d1117', flexShrink: 0 }}>
+                {typingNames.length === 1 ? `${typingNames[0]} is typing…` : `${typingNames.slice(0, 2).join(' and ')} are typing…`}
               </div>
             )}
 
-            <div style={{
-              borderTop: '1px solid rgba(255, 255, 255, 0.06)',
-              background: 'rgba(255, 255, 255, 0.02)',
-            }}>
-              <ChatInput
-                disabled={status !== 'subscribed' || !me}
+            {/* Reply banner */}
+            {replyTo && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 16px 0', fontSize: 12, color: 'rgba(170,181,199,0.65)', background: '#0d1117', flexShrink: 0 }}>
+                <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="#00d9e6" strokeWidth={2} strokeLinecap="round">
+                  <path d="M3 10h10a8 8 0 0 1 8 8v2M3 10l6-6M3 10l6 6" />
+                </svg>
+                <span>Replying to <strong style={{ color: '#e2e8f0' }}>{allProfiles[replyTo.user_id]?.username ?? 'User'}</strong></span>
+                <span style={{ color: 'rgba(170,181,199,0.4)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 200 }}>
+                  {replyTo.content ?? replyTo.file_name ?? ''}
+                </span>
+                <button onClick={() => setReplyTo(null)} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: 'rgba(170,181,199,0.4)', cursor: 'pointer', padding: '0 4px', fontSize: 14 }}>✕</button>
+              </div>
+            )}
+
+            {/* Input */}
+            <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', background: '#0d1117', flexShrink: 0 }}>
+              <ChatInputBar
+                disabled={status !== 'subscribed' || !me || !activeView}
                 placeholder={
-                  !me                       ? 'Sign in to chat…'        :
-                  status !== 'subscribed'   ? 'Connecting…'              :
-                                              'Write a message…'
+                  !me         ? 'Sign in to chat…' :
+                  !activeView ? 'Select a channel…' :
+                  status !== 'subscribed' ? 'Connecting…' :
+                  activeView.kind === 'channel' ? `Message #${activeChannelName}` : `Message ${activeChannelName}`
                 }
-                onSend={async (text) => {
-                  const r = await send(text)
-                  return r
-                }}
+                onSend={async (text) => { const r = await send(text, replyTo?.id); if (r.ok) setReplyTo(null); return r }}
+                onSendFile={async (file) => { const r = await sendFile(file, replyTo?.id); if (r.ok) setReplyTo(null); return r }}
                 onTyping={sendTyping}
               />
             </div>
-          </section>
-
-          <div className="presence-hide-mobile" style={{ flexShrink: 0 }}>
-            <PresencePanel presence={presence} meId={me?.id ?? null} />
           </div>
+
+          {/* Right: members */}
+          <MembersPanel
+            allProfiles={allProfiles}
+            onlineIds={onlineIds}
+            myId={me?.id ?? null}
+            isAdmin={isAdmin}
+            onOpenDM={openDM}
+            onBanUser={async (userId) => { if (me && channelKey) await banUser(channelKey, userId, me.id) }}
+          />
         </div>
+
+        <style jsx global>{`
+          @media (max-width: 768px) { .chat-mobile-menu { display: block !important; } }
+        `}</style>
       </main>
-
-      <style jsx global>{`
-        @media (max-width: 768px) {
-          .presence-hide-mobile { display: none !important; }
-        }
-      `}</style>
     </>
-  )
-}
-
-
-// ── connection status indicator ──────────────────────────────────────────────
-
-function connectionLabel(s: string): string {
-  switch (s) {
-    case 'subscribed': return 'Connected'
-    case 'connecting': return 'Connecting…'
-    case 'closed':     return 'Disconnected'
-    case 'error':      return 'Connection error'
-    default:           return s
-  }
-}
-
-function ConnectionDot({ status }: { status: string }) {
-  const color =
-    status === 'subscribed' ? '#22c55e' :
-    status === 'error'      ? '#ef4444' :
-                              '#f59e0b'
-  return (
-    <div
-      title={connectionLabel(status)}
-      style={{
-        display: 'flex', alignItems: 'center', gap: 8,
-        fontSize: 12, color: 'rgba(170, 181, 199, 0.8)',
-      }}
-    >
-      <span
-        style={{
-          width: 8, height: 8, borderRadius: '50%',
-          background: color,
-          boxShadow: `0 0 0 3px ${color}33`,
-          animation: status === 'subscribed' ? 'chat-pulse 2s ease-in-out infinite' : undefined,
-        }}
-      />
-      <span>{connectionLabel(status)}</span>
-
-      <style jsx>{`
-        @keyframes chat-pulse {
-          0%, 100% { opacity: 1; }
-          50%      { opacity: 0.5; }
-        }
-      `}</style>
-    </div>
   )
 }
