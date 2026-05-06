@@ -23,7 +23,7 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js'
 import { getWebsiteApiUrl } from './runtime-config'
 
 const TOKEN_KEY = 'watchdog-token'
-const REFRESH_INTERVAL_MS = 30_000   // 30s — short enough to recover quickly
+const REFRESH_INTERVAL_MS = 5 * 60_000   // 5min — token lasts 1h, no need to refresh aggressively
 
 // Local view of the electronAPI shape we use here. We don't `declare global`
 // it because BackendCrashOverlay.tsx already does that with a different
