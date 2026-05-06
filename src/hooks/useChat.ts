@@ -1,264 +1,281 @@
 /**
- * useChat.ts — Supabase Realtime chat hook.
- *
- * Composes three Supabase Realtime features on a single channel:
- *
- *   • postgres_changes (INSERT)  →  message stream from `public.messages`
- *   • presence                   →  who's online in this room (`track()`/`sync`)
- *   • broadcast                  →  ephemeral typing indicators
- *
- * Plus a one-time historical fetch to backfill the last N messages so
- * the user doesn't open an empty room.
- *
- * Same hook serves Electron desktop AND the web dashboard at /app/ —
- * Supabase Realtime is just a WebSocket to the cloud, identical from
- * both environments.
+ * useChat.ts — Discord-like chat hook powered by Supabase Realtime.
  */
 'use client'
 
 import { useEffect, useRef, useState, useCallback } from 'react'
-import type { RealtimeChannel, SupabaseClient } from '@supabase/supabase-js'
+import type { RealtimeChannel } from '@supabase/supabase-js'
 import { getSupabase } from '@/lib/supabase'
-import { decodeTokenPayload, getToken, getTokenUser } from '@/lib/auth'
+import { getToken, decodeTokenPayload } from '@/lib/auth'
+import {
+  getChannels, fetchMessages,
+  sendMessage as dbSendMessage,
+  editMessage as dbEditMessage,
+  softDeleteMessage, addReaction, removeReaction,
+  fetchReactionsForChannel, getMyDMChannels, getOrCreateDM,
+  getProfile, getAllProfiles, uploadChatFile,
+  type ChatChannel, type RawChatMessage, type ChatReaction,
+  type ChatProfile, type ChatDMChannel, type PresenceEntry,
+} from '@/lib/chatClient'
 
+export interface LocalUser { id: string; email: string | null; username: string }
 
-export interface ChatMessage {
-  id:         string
-  created_at: string
-  user_id:    string
-  username:   string | null
-  avatar_url: string | null
-  content:    string
-  room_id:    string
-}
-
-export interface PresenceUser {
-  user_id:   string
-  username:  string
-  online_at: string
-}
-
-
-/**
- * Read the user's identity from our local JWT. This is the same token
- * the rest of the app uses, so the chat sees the same `auth.uid()` that
- * the rest of the API does.
- */
-function readMe(): { id: string; username: string } | null {
+function readLocalUser(): LocalUser | null {
   const token = getToken()
   if (!token) return null
-  const payload = decodeTokenPayload(token) as Record<string, unknown> | null
-  if (!payload) return null
-  // Supabase JWT has `sub` = uuid, optional `email`, and `user_metadata`
-  const id = payload.sub as string | undefined
-  if (!id) return null
-  const meta = (payload.user_metadata as Record<string, unknown> | undefined) || {}
-  const username =
-    (meta.full_name as string | undefined) ||
-    (meta.name      as string | undefined) ||
-    (payload.email  as string | undefined) ||
-    'Anonymous'
-  return { id, username }
+  try {
+    const p = decodeTokenPayload(token) as Record<string, unknown> | null
+    if (!p) return null
+    const id = p.sub as string | undefined
+    if (!id) return null
+    const meta  = (p.user_metadata as Record<string, unknown>) ?? {}
+    const email = (p.email as string | undefined) ?? null
+    const username = (meta.full_name as string) || (meta.name as string) || email?.split('@')[0] || 'User'
+    return { id, email, username }
+  } catch { return null }
 }
 
+export type ChannelView =
+  | { kind: 'channel'; channelId: string }
+  | { kind: 'dm';      dmId: string; otherUserId: string }
 
-export function useChat(roomId: string = 'global', initialLimit: number = 100) {
-  const [messages, setMessages]   = useState<ChatMessage[]>([])
-  const [presence, setPresence]   = useState<Record<string, PresenceUser>>({})
-  const [typing,   setTyping]     = useState<Record<string, number>>({})  // userId -> last typing timestamp
-  const [status,   setStatus]     = useState<'connecting' | 'subscribed' | 'closed' | 'error'>('connecting')
-  const [me, setMe]               = useState<{ id: string; username: string } | null>(null)
+export type ReactionMap = Record<string, { count: number; mine: boolean }>
 
-  const channelRef                = useRef<RealtimeChannel | null>(null)
-  const supabaseRef               = useRef<SupabaseClient | null>(null)
-  const cancelledRef              = useRef(false)
+export type ChatMessage = RawChatMessage & {
+  profile:   ChatProfile | null
+  reactions: ReactionMap
+}
 
+function buildReactionMap(reactions: ChatReaction[], msgId: string, myId: string | null): ReactionMap {
+  const map: ReactionMap = {}
+  for (const r of reactions) {
+    if (r.message_id !== msgId) continue
+    if (!map[r.emoji]) map[r.emoji] = { count: 0, mine: false }
+    map[r.emoji].count++
+    if (r.user_id === myId) map[r.emoji].mine = true
+  }
+  return map
+}
 
-  // ── identify the current user ────────────────────────────────────────────
-  useEffect(() => {
-    setMe(readMe())
+function enrichMessages(raws: RawChatMessage[], profiles: Record<string, ChatProfile>, reactions: ChatReaction[], myId: string | null): ChatMessage[] {
+  return raws.map((m) => ({ ...m, profile: profiles[m.user_id] ?? null, reactions: buildReactionMap(reactions, m.id, myId) }))
+}
+
+export function useChat() {
+  const [me,          setMe]          = useState<LocalUser | null>(null)
+  const [myProfile,   setMyProfile]   = useState<ChatProfile | null>(null)
+  const [allProfiles, setAllProfiles] = useState<Record<string, ChatProfile>>({})
+  const [channels,    setChannels]    = useState<ChatChannel[]>([])
+  const [activeView,  _setActiveView] = useState<ChannelView | null>(null)
+  const [rawMessages, setRawMessages] = useState<RawChatMessage[]>([])
+  const [reactions,   setReactions]   = useState<ChatReaction[]>([])
+  const [loadingMsgs, setLoadingMsgs] = useState(false)
+  const [hasMore,     setHasMore]     = useState(false)
+  const [presence,    setPresence]    = useState<Record<string, PresenceEntry>>({})
+  const [onlineIds,   setOnlineIds]   = useState<Set<string>>(new Set())
+  const [dmChannels,  setDmChannels]  = useState<ChatDMChannel[]>([])
+  const [typing,      setTyping]      = useState<Record<string, number>>({})
+  const [status,      setStatus]      = useState<'connecting' | 'subscribed' | 'error' | 'closed'>('connecting')
+
+  const meRef         = useRef<LocalUser | null>(null)
+  const globalChRef   = useRef<RealtimeChannel | null>(null)
+  const profilesRef   = useRef<Record<string, ChatProfile>>({})
+  const reactionsRef  = useRef<ChatReaction[]>([])
+  const activeViewRef = useRef<ChannelView | null>(null)
+
+  const messages: ChatMessage[] = enrichMessages(rawMessages, allProfiles, reactions, me?.id ?? null)
+
+  const setActiveView = useCallback((v: ChannelView | null) => {
+    activeViewRef.current = v
+    _setActiveView(v)
   }, [])
 
+  const channelKey =
+    activeView?.kind === 'channel' ? activeView.channelId :
+    activeView?.kind === 'dm'      ? activeView.dmId      : null
 
-  // ── one-time history backfill + realtime subscribe ──────────────────────
+  // Identify user + load all profiles
   useEffect(() => {
-    cancelledRef.current = false
+    const u = readLocalUser()
+    setMe(u); meRef.current = u
+    if (u) {
+      getProfile(u.id).then((p) => {
+        if (p) { setMyProfile(p); setAllProfiles((prev) => { const n = { ...prev, [p.user_id]: p }; profilesRef.current = n; return n }) }
+      })
+    }
+    getAllProfiles().then((list) => {
+      const map: Record<string, ChatProfile> = {}
+      for (const p of list) map[p.user_id] = p
+      setAllProfiles(map); profilesRef.current = map
+    })
+  }, [])
 
+  // Load channel list + auto-select first
+  useEffect(() => {
+    getChannels().then((chs) => {
+      setChannels(chs)
+      if (chs.length > 0 && !activeViewRef.current) {
+        const v: ChannelView = { kind: 'channel', channelId: chs[0].id }
+        activeViewRef.current = v; _setActiveView(v)
+      }
+    })
+    const u = readLocalUser()
+    if (u) getMyDMChannels(u.id).then(setDmChannels)
+  }, [])
+
+  // Global channel: presence + typing + metadata changes
+  useEffect(() => {
     let unsub: (() => void) | null = null
-
     ;(async () => {
       const supabase = await getSupabase()
-      if (cancelledRef.current) return
-      supabaseRef.current = supabase
+      const ch = supabase.channel('wd-chat-global')
 
-      // History — last `initialLimit` messages, oldest first so they
-      // render top-to-bottom in chronological order.
-      const { data: hist, error } = await supabase
-        .from('messages')
-        .select('*')
-        .eq('room_id', roomId)
-        .order('created_at', { ascending: false })
-        .limit(initialLimit)
-
-      if (cancelledRef.current) return
-      if (error) {
-        console.warn('[useChat] history fetch failed:', error.message)
-      } else if (hist) {
-        setMessages([...hist].reverse() as ChatMessage[])
-      }
-
-      // Live channel: postgres_changes + presence + broadcast (typing)
-      const meNow = readMe()
-      const channel = supabase.channel(`chat:${roomId}`, {
-        config: { presence: { key: meNow?.id || crypto.randomUUID() } },
+      ch.on('postgres_changes', { event: '*', schema: 'public', table: 'chat_channels' }, () => { getChannels().then(setChannels) })
+      ch.on('postgres_changes', { event: '*', schema: 'public', table: 'chat_profiles' }, () => {
+        getAllProfiles().then((list) => {
+          const map: Record<string, ChatProfile> = {}
+          for (const p of list) map[p.user_id] = p
+          setAllProfiles(map); profilesRef.current = map
+        })
       })
 
-      channel.on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'messages', filter: `room_id=eq.${roomId}` },
-        (payload) => {
-          const m = payload.new as ChatMessage
-          setMessages((prev) => {
-            // Replace optimistic copy if the same id already exists
-            const i = prev.findIndex((x) => x.id === m.id)
-            if (i >= 0) {
-              const next = [...prev]; next[i] = m; return next
-            }
-            return [...prev, m]
-          })
-        },
-      )
-
-      channel.on('presence', { event: 'sync' }, () => {
-        const state = channel.presenceState() as Record<string, PresenceUser[]>
-        const flat: Record<string, PresenceUser> = {}
-        for (const arr of Object.values(state)) {
-          for (const p of arr) flat[p.user_id] = p
-        }
-        setPresence(flat)
+      ch.on('presence', { event: 'sync' }, () => {
+        const state = ch.presenceState() as Record<string, PresenceEntry[]>
+        const flat: Record<string, PresenceEntry> = {}
+        const ids = new Set<string>()
+        for (const arr of Object.values(state)) for (const p of arr) { flat[p.user_id] = p; ids.add(p.user_id) }
+        setPresence(flat); setOnlineIds(ids)
       })
 
-      channel.on('broadcast', { event: 'typing' }, (msg) => {
-        const userId = (msg.payload as { user_id?: string })?.user_id
-        if (!userId || userId === meNow?.id) return
-        setTyping((t) => ({ ...t, [userId]: Date.now() }))
+      ch.on('broadcast', { event: 'typing' }, (msg) => {
+        const { user_id, channel_id } = (msg.payload ?? {}) as { user_id?: string; channel_id?: string }
+        if (!user_id || user_id === meRef.current?.id) return
+        setTyping((t) => ({ ...t, [`${channel_id}:${user_id}`]: Date.now() }))
       })
 
-      channel.subscribe(async (s) => {
+      ch.subscribe(async (s) => {
         if (s === 'SUBSCRIBED') {
           setStatus('subscribed')
-          if (meNow) {
-            await channel.track({
-              user_id:   meNow.id,
-              username:  meNow.username,
-              online_at: new Date().toISOString(),
-            } satisfies PresenceUser)
-          }
-        } else if (s === 'CHANNEL_ERROR' || s === 'TIMED_OUT') {
-          setStatus('error')
-        } else if (s === 'CLOSED') {
-          setStatus('closed')
-        }
+          const u = meRef.current; const prof = u ? profilesRef.current[u.id] : null
+          if (u) await ch.track({ user_id: u.id, username: prof?.username ?? u.username, avatar_url: prof?.avatar_url ?? null, online_at: new Date().toISOString() } satisfies PresenceEntry)
+        } else if (s === 'CHANNEL_ERROR' || s === 'TIMED_OUT') { setStatus('error')
+        } else if (s === 'CLOSED') { setStatus('closed') }
       })
 
-      channelRef.current = channel
-      unsub = () => {
-        try { channel.unsubscribe() } catch { /* ignore */ }
-        try { supabase.removeChannel(channel) } catch { /* ignore */ }
-      }
+      globalChRef.current = ch
+      unsub = () => { try { ch.unsubscribe() } catch { /* */ }; try { supabase.removeChannel(ch) } catch { /* */ } }
     })()
+    return () => { unsub?.() }
+  }, [])
 
-    return () => {
-      cancelledRef.current = true
-      unsub?.()
-      channelRef.current = null
-    }
-  }, [roomId, initialLimit])
-
-
-  // ── prune stale typing indicators ────────────────────────────────────────
+  // Re-track presence when profile loads
   useEffect(() => {
-    const t = setInterval(() => {
-      const now = Date.now()
-      setTyping((cur) => {
-        const next: Record<string, number> = {}
-        for (const [k, v] of Object.entries(cur)) {
-          if (now - v < 4_000) next[k] = v
-        }
-        return next
-      })
-    }, 1_500)
+    const ch = globalChRef.current
+    if (!ch || !me) return
+    const prof = allProfiles[me.id]
+    if (!prof) return
+    void ch.track({ user_id: me.id, username: prof.username, avatar_url: prof.avatar_url ?? null, online_at: new Date().toISOString() } satisfies PresenceEntry)
+  }, [myProfile, me, allProfiles])
+
+  // Stale typing pruner
+  useEffect(() => {
+    const t = setInterval(() => setTyping((cur) => { const now = Date.now(); const next: Record<string, number> = {}; for (const [k, v] of Object.entries(cur)) if (now - v < 4000) next[k] = v; return next }), 1500)
     return () => clearInterval(t)
   }, [])
 
+  // Per-channel messages + reactions subscription
+  useEffect(() => {
+    if (!channelKey) return
+    let unsub: (() => void) | null = null
+    setRawMessages([]); setReactions([]); reactionsRef.current = []; setHasMore(false); setLoadingMsgs(true)
 
-  // ── send a message ───────────────────────────────────────────────────────
-  const send = useCallback(
-    async (content: string) => {
-      const trimmed = content.trim()
-      if (!trimmed) return { ok: false, error: 'empty' as const }
-      if (!me) return { ok: false, error: 'not_signed_in' as const }
-      if (trimmed.length > 4000) return { ok: false, error: 'too_long' as const }
+    ;(async () => {
+      const [msgs, rxns] = await Promise.all([fetchMessages(channelKey, 50), fetchReactionsForChannel(channelKey)])
+      setRawMessages(msgs); setReactions(rxns); reactionsRef.current = rxns; setHasMore(msgs.length === 50); setLoadingMsgs(false)
 
-      const supabase = supabaseRef.current ?? (await getSupabase())
+      const supabase = await getSupabase()
+      const ch = supabase.channel(`wd-chat-msgs-${channelKey}`)
 
-      // Optimistic insert so the sender sees their own message instantly,
-      // before the realtime echo arrives. Keyed by a UUID that the DB will
-      // also use, so the realtime echo updates rather than duplicates.
-      const optimistic: ChatMessage = {
-        id:         crypto.randomUUID(),
-        created_at: new Date().toISOString(),
-        user_id:    me.id,
-        username:   me.username,
-        avatar_url: null,
-        content:    trimmed,
-        room_id:    roomId,
-      }
-      setMessages((prev) => [...prev, optimistic])
+      ch.on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_messages', filter: `channel_id=eq.${channelKey}` }, (payload) => {
+        const m = payload.new as RawChatMessage
+        if (!profilesRef.current[m.user_id]) {
+          getProfile(m.user_id).then((p) => { if (p) { const next = { ...profilesRef.current, [p.user_id]: p }; profilesRef.current = next; setAllProfiles(next) } })
+        }
+        setRawMessages((prev) => prev.find((x) => x.id === m.id) ? prev : [...prev, m])
+      })
 
-      const { error } = await supabase
-        .from('messages')
-        .insert({
-          id:       optimistic.id,
-          user_id:  me.id,
-          username: me.username,
-          content:  trimmed,
-          room_id:  roomId,
-        })
+      ch.on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'chat_messages', filter: `channel_id=eq.${channelKey}` }, (payload) => {
+        const updated = payload.new as RawChatMessage
+        setRawMessages((prev) => prev.map((m) => m.id === updated.id ? { ...m, ...updated } : m))
+      })
 
-      if (error) {
-        // Roll back optimistic + surface the error to the UI
-        setMessages((prev) => prev.filter((m) => m.id !== optimistic.id))
-        return { ok: false, error: error.message }
-      }
-      return { ok: true as const }
-    },
-    [me, roomId],
-  )
+      ch.on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_reactions' }, (payload) => {
+        const r = payload.new as ChatReaction
+        setReactions((prev) => { const next = [...prev, r]; reactionsRef.current = next; return next })
+      })
 
+      ch.on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'chat_reactions' }, (payload) => {
+        const old = payload.old as Partial<ChatReaction>
+        if (!old.id) return
+        setReactions((prev) => { const next = prev.filter((x) => x.id !== old.id); reactionsRef.current = next; return next })
+      })
 
-  // ── broadcast typing ─────────────────────────────────────────────────────
+      ch.subscribe()
+      unsub = () => { try { ch.unsubscribe() } catch { /* */ }; try { supabase.removeChannel(ch) } catch { /* */ } }
+    })()
+
+    return () => { unsub?.() }
+  }, [channelKey])
+
+  const loadMore = useCallback(async () => {
+    if (!channelKey || !hasMore || loadingMsgs) return
+    const oldest = rawMessages[0]?.created_at; if (!oldest) return
+    setLoadingMsgs(true)
+    const older = await fetchMessages(channelKey, 50, oldest)
+    setHasMore(older.length === 50); setRawMessages((prev) => [...older, ...prev]); setLoadingMsgs(false)
+  }, [channelKey, hasMore, loadingMsgs, rawMessages])
+
+  const send = useCallback(async (text: string, replyToId?: string) => {
+    const u = meRef.current
+    if (!u)          return { ok: false as const, error: 'not_signed_in' }
+    if (!channelKey) return { ok: false as const, error: 'no_channel' }
+    const trimmed = text.trim(); if (!trimmed) return { ok: false as const, error: 'empty' }
+    const msg = await dbSendMessage({ channelId: channelKey, userId: u.id, content: trimmed, replyToId })
+    return msg ? { ok: true as const } : { ok: false as const, error: 'send_failed' }
+  }, [channelKey])
+
+  const sendFile = useCallback(async (file: File, replyToId?: string) => {
+    const u = meRef.current
+    if (!u)          return { ok: false as const, error: 'not_signed_in' }
+    if (!channelKey) return { ok: false as const, error: 'no_channel' }
+    const uploaded = await uploadChatFile(u.id, file)
+    if (!uploaded)   return { ok: false as const, error: 'upload_failed' }
+    const msg = await dbSendMessage({ channelId: channelKey, userId: u.id, content: null, fileUrl: uploaded.url, fileName: uploaded.name, fileType: uploaded.type, fileSize: uploaded.size, replyToId })
+    return msg ? { ok: true as const } : { ok: false as const, error: 'send_failed' }
+  }, [channelKey])
+
+  const editMsg   = useCallback((id: string, content: string) => dbEditMessage(id, content), [])
+  const deleteMsg = useCallback((id: string) => softDeleteMessage(id), [])
+
+  const react = useCallback(async (messageId: string, emoji: string) => {
+    const u = meRef.current; if (!u) return
+    const existing = reactionsRef.current.find((r) => r.message_id === messageId && r.user_id === u.id && r.emoji === emoji)
+    if (existing) await removeReaction(messageId, u.id, emoji)
+    else           await addReaction(messageId, u.id, emoji)
+  }, [])
+
+  const openDM = useCallback(async (otherUserId: string) => {
+    const u = meRef.current; if (!u) return
+    const dm = await getOrCreateDM(u.id, otherUserId); if (!dm) return
+    setDmChannels((prev) => prev.find((d) => d.id === dm.id) ? prev : [...prev, dm])
+    setActiveView({ kind: 'dm', dmId: dm.id, otherUserId })
+  }, [setActiveView])
+
   const sendTyping = useCallback(() => {
-    const ch = channelRef.current
-    if (!ch || !me) return
-    ch.send({ type: 'broadcast', event: 'typing', payload: { user_id: me.id } })
-  }, [me])
+    const ch = globalChRef.current; const u = meRef.current
+    if (!ch || !u || !channelKey) return
+    ch.send({ type: 'broadcast', event: 'typing', payload: { user_id: u.id, channel_id: channelKey } })
+  }, [channelKey])
 
-
-  return {
-    /** Identity of the current user (null until JWT is read). */
-    me,
-    /** Chronological message list, oldest first. */
-    messages,
-    /** { user_id → presence info } for everyone currently in the room. */
-    presence,
-    /** { user_id → epoch_ms } for users who broadcast 'typing' in last 4s. */
-    typing,
-    /** Channel state — useful for showing a "Connecting…" indicator. */
-    status,
-    /** Send a message. Returns { ok: true } or { ok: false, error: '...' }. */
-    send,
-    /** Broadcast a typing indicator. Cheap; safe to call on every keystroke. */
-    sendTyping,
-  }
+  return { me, myProfile, allProfiles, channels, activeView, setActiveView, messages, loadingMsgs, hasMore, loadMore, send, sendFile, editMsg, deleteMsg, react, presence, onlineIds, dmChannels, openDM, typing, sendTyping, status }
 }
