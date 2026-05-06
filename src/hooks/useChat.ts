@@ -3,7 +3,7 @@
  */
 'use client'
 
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import type { RealtimeChannel } from '@supabase/supabase-js'
 import { getSupabase } from '@/lib/supabase'
 import { getToken, decodeTokenPayload } from '@/lib/auth'
@@ -83,7 +83,10 @@ export function useChat() {
   const reactionsRef  = useRef<ChatReaction[]>([])
   const activeViewRef = useRef<ChannelView | null>(null)
 
-  const messages: ChatMessage[] = enrichMessages(rawMessages, allProfiles, reactions, me?.id ?? null)
+  const messages: ChatMessage[] = useMemo(
+    () => enrichMessages(rawMessages, allProfiles, reactions, me?.id ?? null),
+    [rawMessages, allProfiles, reactions, me?.id]
+  )
 
   const setActiveView = useCallback((v: ChannelView | null) => {
     activeViewRef.current = v
