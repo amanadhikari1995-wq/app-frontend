@@ -20,6 +20,7 @@
  */
 import { getWebsiteApiUrl } from './runtime-config'
 import { getToken } from './auth'
+import { readFreshToken } from './supabase'
 
 export interface RelayResponse {
   status: number
@@ -176,8 +177,14 @@ class RelayClient {
   private _open(): void {
     if (this.connecting) return
     this.connecting = true
+    void this._openAsync()
+  }
 
-    const token = getToken()
+  private async _openAsync(): Promise<void> {
+    // Re-read JWT freshly each reconnect: in Electron, sync_engine refreshes
+    // the token on disk and the IPC channel exposes the live value. Falling
+    // back to localStorage covers the web build.
+    const token = (await readFreshToken().catch(() => null)) ?? getToken()
     if (!token) {
       // No JWT yet — schedule a retry; the user is probably mid-login.
       this.connecting = false
