@@ -250,7 +250,7 @@ export function useChat() {
     if (!channelKey) return { ok: false as const, error: 'no_channel' }
     const uploaded = await uploadChatFile(u.id, file)
     if (!uploaded)   return { ok: false as const, error: 'upload_failed' }
-    const msg = await dbSendMessage({ channelId: channelKey, userId: u.id, content: null, fileUrl: uploaded.url, fileName: uploaded.name, fileType: uploaded.type, fileSize: uploaded.size, replyToId })
+    const msg = await dbSendMessage({ channelId: channelKey, userId: u.id, content: undefined, fileUrl: uploaded.url, fileName: uploaded.name, fileType: uploaded.type, fileSize: uploaded.size, replyToId })
     return msg ? { ok: true as const } : { ok: false as const, error: 'send_failed' }
   }, [channelKey])
 
