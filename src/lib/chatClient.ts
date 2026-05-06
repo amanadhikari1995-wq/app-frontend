@@ -31,8 +31,7 @@ export interface RawChatMessage {
   file_name:   string | null
   file_type:   string | null
   file_size:   number | null
-  reply_to_id: string | null
-  is_edited:   boolean
+  reply_to:    string | null
   is_deleted:  boolean
   created_at:  string
   updated_at:  string
@@ -129,15 +128,15 @@ export async function fetchMessages(channelId: string, limit = 50, before?: stri
 export async function sendMessage(p: { channelId: string; userId: string; content?: string; fileUrl?: string; fileName?: string; fileType?: string; fileSize?: number; replyToId?: string }): Promise<RawChatMessage | null> {
   const sb = await getSupabase()
   const { data, error } = await sb.from('chat_messages')
-    .insert({ channel_id: p.channelId, user_id: p.userId, content: p.content ?? null, file_url: p.fileUrl ?? null, file_name: p.fileName ?? null, file_type: p.fileType ?? null, file_size: p.fileSize ?? null, reply_to_id: p.replyToId ?? null })
+    .insert({ channel_id: p.channelId, user_id: p.userId, content: p.content ?? null, file_url: p.fileUrl ?? null, file_name: p.fileName ?? null, file_type: p.fileType ?? null, file_size: p.fileSize ?? null, reply_to: p.replyToId ?? null })
     .select().single()
-  if (error) { console.error('[chatClient] sendMessage:', error.message); return null }
+  if (error) { console.error('[chatClient] sendMessage:', error.message, error.code, error.details, error.hint); return null }
   return data as RawChatMessage
 }
 
 export async function editMessage(id: string, content: string): Promise<boolean> {
   const sb = await getSupabase()
-  const { error } = await sb.from('chat_messages').update({ content, is_edited: true, updated_at: new Date().toISOString() }).eq('id', id)
+  const { error } = await sb.from('chat_messages').update({ content, updated_at: new Date().toISOString() }).eq('id', id)
   return !error
 }
 
