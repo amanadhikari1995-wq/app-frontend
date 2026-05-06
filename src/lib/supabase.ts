@@ -74,8 +74,50 @@ async function readFreshToken(): Promise<string | null> {
     try {
       const t = await api.getCurrentToken()
       if (t) return t
-    } catch { /* IPC failure → fall through to localStorage */ }
+    } catch { /* IPC failure → fall through */ }
   }
+
+  // Web mode: proactively refresh the Supabase token when it is within
+  // 5 minutes of expiry, using the refresh_token stored at login.
+  // In Electron mode sync_engine.py owns refresh; in the browser (web
+  // dashboard) there is no background process, so we do it here.
+  // autoRefreshToken is deliberately false to avoid races in Electron —
+  // but in web mode we must refresh manually or sessions die after ~1 h.
+  if (typeof window !== 'undefined' && !api?.getCurrentToken) {
+    try {
+      const raw = window.localStorage.getItem('watchdog-session-full')
+      if (raw && _client) {
+        const stored = JSON.parse(raw) as {
+          access_token:  string
+          refresh_token?: string | null
+          expires_at?:   number
+        }
+        const now       = Math.floor(Date.now() / 1000)
+        const expiresAt = stored.expires_at ?? 0
+        // Refresh when within 5 minutes of expiry (covers the idle case
+        // where the token hasn't been touched for ~55 min).
+        if (stored.refresh_token && expiresAt > 0 && (expiresAt - now) < 300) {
+          const { data, error } = await _client.auth.refreshSession({
+            refresh_token: stored.refresh_token,
+          })
+          if (!error && data?.session) {
+            const s = data.session
+            const updated = {
+              access_token:  s.access_token,
+              refresh_token: s.refresh_token ?? stored.refresh_token,
+              expires_at:    s.expires_at    ?? (now + 3600),
+              user_id:       s.user?.id      ?? null,
+              email:         s.user?.email   ?? null,
+            }
+            try { window.localStorage.setItem('watchdog-session-full', JSON.stringify(updated)) } catch { /* quota */ }
+            try { window.localStorage.setItem('watchdog-token', s.access_token) } catch { /* quota */ }
+            return s.access_token
+          }
+        }
+      }
+    } catch { /* best-effort — fall through to sync read */ }
+  }
+
   return readTokenSync()
 }
 
@@ -193,3 +235,4 @@ export function refreshSupabaseAuth(): void {
   _initOnce = null
   _currentToken = null
 }
+
