@@ -68,7 +68,7 @@ function readTokenSync(): string | null {
  * on every successful refresh — the loser of the race gets
  * "refresh_token already used".
  */
-async function readFreshToken(): Promise<string | null> {
+export async function readFreshToken(): Promise<string | null> {
   const api = getElectronAPI()
   if (api?.getCurrentToken) {
     try {
@@ -224,15 +224,18 @@ export function getSupabase(): Promise<SupabaseClient> {
  * on a page that previously had no token, or the token got refreshed).
  * Call this from your auth flow after writing the new token to localStorage.
  */
-export function refreshSupabaseAuth(): void {
-  if (!_client) return
-  const token = readTokenSync()
+export async function refreshSupabaseAuth(): Promise<void> {
+  if (!_client) {
+    // not initialized yet - let init happen normally on next getSupabase()
+    _initOnce = null
+    return
+  }
+  // Prefer freshest source (Electron IPC, then localStorage). Update auth
+  // in-place to avoid orphaning live realtime channel subscriptions tied
+  // to the existing client instance.
+  const token = (await readFreshToken().catch(() => null)) ?? readTokenSync()
   if (!token) return
-  _client.realtime.setAuth(token)
-  // Refresh the global headers for HTTP calls. Supabase JS doesn't expose
-  // a public setter, so we replace the client on next getSupabase() call.
-  _client = null
-  _initOnce = null
-  _currentToken = null
+  _currentToken = token
+  applyToken(_client, token)
 }
 
